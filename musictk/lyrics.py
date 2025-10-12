@@ -1,26 +1,37 @@
+"""Lyrics fetching functionality for audio files."""
+
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
-import sys
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import TYPE_CHECKING
 
 import aiohttp
 from mutagen._file import File
 
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
 
 class LyricsFetcher:
+    API_BASE_URL: str = "https://lrclib.net"
+    SUPPORTED_FORMATS: frozenset[str] = frozenset(
+        {".mp3", ".flac", ".m4a", ".wav", ".ogg"}
+    )
 
-    API_BASE_URL = "https://lrclib.net"
-    SUPPORTED_FORMATS = {".mp3", ".flac", ".m4a", ".wav", ".ogg"}
-
-    def __init__(self, base_dir: str):
+    def __init__(
+        self, base_dir: str | Path, lyrics_dir: str | Path | None = None
+    ) -> None:
         self.base_dir = Path(base_dir)
-        self.lyrics_dir = Path.home() / "Music" / "mpd" / "lyrics"
+        self.lyrics_dir = (
+            Path(lyrics_dir) if lyrics_dir else Path.home() / "Music" / "mpd" / "lyrics"
+        )
         self.lyrics_dir.mkdir(parents=True, exist_ok=True)
-        self.setup_logging()
+        self.logger = self._setup_logging()
 
-    def setup_logging(self):
+    def _setup_logging(self) -> logging.Logger:
         logging.basicConfig(
             level=logging.INFO,
             format="%(asctime)s - %(levelname)s - %(message)s",
@@ -29,10 +40,10 @@ class LyricsFetcher:
                 logging.StreamHandler(),
             ],
         )
-        self.logger = logging.getLogger(__name__)
+        return logging.getLogger(__name__)
 
-    def find_audio_files(self) -> List[Path]:
-        audio_files = []
+    def find_audio_files(self) -> list[Path]:
+        audio_files: list[Path] = []
 
         for file_path in self.base_dir.rglob("*"):
             if (
@@ -48,46 +59,39 @@ class LyricsFetcher:
 
         return audio_files
 
-    def extract_metadata(self, file_path: Path) -> Optional[Dict[str, str]]:
+    def extract_metadata(self, file_path: Path) -> dict[str, str | int] | None:
         try:
             audio_file = File(file_path)
             if audio_file is None:
                 self.logger.warning(f"Could not read metadata from {file_path}")
                 return None
 
-            # Common metadata fields across different formats
-            metadata = {}
+            metadata: dict[str, str | int] = {}
 
-            # Try different tag formats
             if hasattr(audio_file, "tags") and audio_file.tags:
                 tags = audio_file.tags
 
-                # Get title
                 title_keys = ["TIT2", "TITLE", "\xa9nam", "Title"]
                 for key in title_keys:
                     if key in tags:
                         metadata["title"] = str(tags[key][0])
                         break
 
-                # Get artist
                 artist_keys = ["TPE1", "ARTIST", "\xa9ART", "Artist"]
                 for key in artist_keys:
                     if key in tags:
                         metadata["artist"] = str(tags[key][0])
                         break
 
-                # Get album
                 album_keys = ["TALB", "ALBUM", "\xa9alb", "Album"]
                 for key in album_keys:
                     if key in tags:
                         metadata["album"] = str(tags[key][0])
                         break
 
-                # Get duration
                 if hasattr(audio_file, "info") and hasattr(audio_file.info, "length"):
                     metadata["duration"] = int(audio_file.info.length)
 
-            # Fallback to filename if no title found
             if "title" not in metadata:
                 metadata["title"] = file_path.stem
 
@@ -98,31 +102,28 @@ class LyricsFetcher:
             return None
 
     async def search_lyrics(
-        self, session: aiohttp.ClientSession, metadata: Dict[str, str]
-    ) -> Optional[Dict]:
+        self, session: aiohttp.ClientSession, metadata: dict[str, str | int]
+    ) -> dict[str, str | int] | None:
         try:
-            params = {}
+            params: dict[str, str] = {}
 
             if "title" in metadata:
-                params["track_name"] = metadata["title"]
+                params["track_name"] = str(metadata["title"])
             if "artist" in metadata:
-                params["artist_name"] = metadata["artist"]
+                params["artist_name"] = str(metadata["artist"])
             if "album" in metadata:
-                params["album_name"] = metadata["album"]
+                params["album_name"] = str(metadata["album"])
 
-            # If we don't have track_name or artist, use q parameter for general search
             if not params.get("track_name") and not params.get("artist_name"):
                 if "title" in metadata:
-                    params["q"] = metadata["title"]
+                    params["q"] = str(metadata["title"])
                 else:
                     return None
 
             url = f"{self.API_BASE_URL}/api/search"
             self.logger.info(f"Searching lyrics with params: {params}")
 
-            headers = {
-                "User-Agent": "LYRICSFETCHER (https://github.com/404Simon/lyricsfetcher)"
-            }
+            headers = {"User-Agent": "musictk (https://github.com/404Simon/musictk)"}
             async with session.get(
                 url,
                 params=params,
@@ -130,10 +131,9 @@ class LyricsFetcher:
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as response:
                 response.raise_for_status()
-                results = await response.json()
+                results: list[dict[str, str | int]] = await response.json()
 
             if results and isinstance(results, list) and len(results) > 0:
-                # Return the first result (best match)
                 return results[0]
             else:
                 self.logger.warning("No lyrics found")
@@ -146,12 +146,13 @@ class LyricsFetcher:
             self.logger.error(f"Error parsing API response: {e}")
             return None
 
-    def save_lrc_file(self, audio_file_path: Path, lyrics_data: Dict) -> bool:
+    def save_lrc_file(
+        self, audio_file_path: Path, lyrics_data: dict[str, str | int]
+    ) -> bool:
         try:
             lrc_filename = audio_file_path.stem + ".lrc"
             lrc_path = self.lyrics_dir / lrc_filename
 
-            # Prefer synced lyrics, fallback to plain lyrics
             lyrics_content = lyrics_data.get("syncedLyrics")
             if not lyrics_content:
                 lyrics_content = lyrics_data.get("plainLyrics")
@@ -162,9 +163,7 @@ class LyricsFetcher:
                 )
                 return False
 
-            # Write LRC file
             with open(lrc_path, "w", encoding="utf-8") as f:
-                # Add metadata to LRC file
                 if lyrics_data.get("trackName"):
                     f.write(f"[ti:{lyrics_data['trackName']}]\n")
                 if lyrics_data.get("artistName"):
@@ -172,12 +171,13 @@ class LyricsFetcher:
                 if lyrics_data.get("albumName"):
                     f.write(f"[al:{lyrics_data['albumName']}]\n")
                 if lyrics_data.get("duration"):
-                    minutes = int(lyrics_data["duration"] // 60)
-                    seconds = int(lyrics_data["duration"] % 60)
+                    duration = int(lyrics_data["duration"])
+                    minutes = duration // 60
+                    seconds = duration % 60
                     f.write(f"[length:{minutes:02d}:{seconds:02d}]\n")
 
                 f.write("\n")
-                f.write(lyrics_content)
+                f.write(str(lyrics_content))
 
             self.logger.info(f"Saved lyrics to {lrc_path}")
             return True
@@ -191,23 +191,19 @@ class LyricsFetcher:
     ) -> bool:
         self.logger.info(f"Processing: {file_path}")
 
-        # Extract metadata
         metadata = self.extract_metadata(file_path)
         if not metadata:
             self.logger.error(f"Could not extract metadata from {file_path}")
             return False
 
-        # Search for lyrics
         lyrics_data = await self.search_lyrics(session, metadata)
         if not lyrics_data:
             self.logger.warning(f"No lyrics found for {file_path.name}")
             return False
 
-        # Save LRC file
         return self.save_lrc_file(file_path, lyrics_data)
 
-    async def run(self):
-        """Main execution function"""
+    async def run(self) -> None:
         if not self.base_dir.exists():
             self.logger.error(f"Directory does not exist: {self.base_dir}")
             return
@@ -223,7 +219,9 @@ class LyricsFetcher:
 
         async with aiohttp.ClientSession() as session:
             tasks = [self.process_file(session, file_path) for file_path in audio_files]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+            results: Sequence[bool | BaseException] = await asyncio.gather(
+                *tasks, return_exceptions=True
+            )
 
         success_count = 0
         for i, result in enumerate(results):
@@ -233,19 +231,6 @@ class LyricsFetcher:
                 success_count += 1
 
         self.logger.info(
-            f"Completed: {success_count}/{len(audio_files)} files processed successfully"
+            f"Completed: {success_count}/{len(audio_files)} files "
+            f"processed successfully"
         )
-
-
-def main():
-    if len(sys.argv) > 1:
-        directory = sys.argv[1]
-    else:
-        directory = str(Path.home() / "Music")
-
-    fetcher = LyricsFetcher(directory)
-    asyncio.run(fetcher.run())
-
-
-if __name__ == "__main__":
-    main()
