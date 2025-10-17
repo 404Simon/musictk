@@ -394,7 +394,15 @@ def search_musicbrainz(
         if "releases" in recording:
             releases: list[dict[str, Any]] = recording["releases"]
             if releases:
-                release = releases[0]
+                preferred_release = releases[0]
+                for rel in releases:
+                    rel_group = rel.get("release-group", {})
+                    secondary_types = rel_group.get("secondary-types", [])
+                    if "Compilation" not in secondary_types:
+                        preferred_release = rel
+                        break
+
+                release = preferred_release
                 result["album"] = release.get("title", "")
 
                 if "date" in release:
@@ -465,7 +473,7 @@ def get_cover_art_url(mbid: str, album_name: str = "") -> str | None:
         return None
 
 
-def download_cover_art(url: str, file_path: str) -> bytes | None:
+def download_cover_art(url: str) -> bytes | None:
     try:
         print("  Downloading cover art...")
         response = requests.get(url, timeout=30)
@@ -473,26 +481,6 @@ def download_cover_art(url: str, file_path: str) -> bytes | None:
         if response.status_code != 200:
             return None
 
-        content_type = response.headers.get("content-type", "")
-        if "jpeg" in content_type or "jpg" in content_type:
-            ext = ".jpg"
-        elif "png" in content_type:
-            ext = ".png"
-        else:
-            ext = ".jpg"
-
-        music_dir = os.path.dirname(file_path)
-        cover_path = os.path.join(music_dir, f"cover{ext}")
-
-        album_cover_path = os.path.join(music_dir, f"album{ext}")
-
-        with open(cover_path, "wb") as f:
-            f.write(response.content)
-
-        with open(album_cover_path, "wb") as f:
-            f.write(response.content)
-
-        print(f"  Cover art saved to {cover_path}")
         return bytes(response.content)
 
     except Exception as e:
@@ -662,6 +650,7 @@ def auto_tag_mode(directory: str, no_cover: bool, delay: float) -> None:
 
     success_count = 0
     cover_downloads = 0
+    downloaded_albums: set[str] = set()
 
     for i, file_path in enumerate(audio_files):
         print(f"\n[{i+1}/{len(audio_files)}] {os.path.basename(file_path)}")
@@ -686,21 +675,27 @@ def auto_tag_mode(directory: str, no_cover: bool, delay: float) -> None:
                 print("  ✓ Tags applied")
 
                 if not no_cover:
-                    cover_url = get_cover_art_url(
-                        tag_data.get("mbid", ""), tag_data["album"]
-                    )
-                    if cover_url:
-                        cover_data = download_cover_art(cover_url, file_path)
-                        if cover_data:
-                            if embed_cover_art(file_path, cover_data):
-                                cover_downloads += 1
-                                print("  ✓ Cover art embedded")
-                            else:
-                                print("  ! Failed to embed cover art")
-                        else:
-                            print("  ! Failed to download cover art")
+                    album_key = f"{artist}|{album}".lower()
+
+                    if album_key in downloaded_albums:
+                        print("  - Cover art already downloaded for this album")
                     else:
-                        print("  - No cover art found")
+                        cover_url = get_cover_art_url(
+                            tag_data.get("mbid", ""), tag_data["album"]
+                        )
+                        if cover_url:
+                            cover_data = download_cover_art(cover_url)
+                            if cover_data:
+                                downloaded_albums.add(album_key)
+                                if embed_cover_art(file_path, cover_data):
+                                    cover_downloads += 1
+                                    print("  ✓ Cover art embedded")
+                                else:
+                                    print("  ! Failed to embed cover art")
+                            else:
+                                print("  ! Failed to download cover art")
+                        else:
+                            print("  - No cover art found")
             else:
                 print("  ! Failed to apply tags")
         else:
