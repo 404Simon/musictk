@@ -352,6 +352,22 @@ def search_musicbrainz(
         data: dict[str, Any] = response.json()
         recordings: list[dict[str, Any]] = data.get("recordings", [])
 
+        if not recordings and album:
+            print("  Retrying without album filter...")
+            query_parts_no_album: list[str] = []
+            if artist:
+                query_parts_no_album.append(f'artist:"{artist}"')
+            if title:
+                query_parts_no_album.append(f'recording:"{title}"')
+
+            query = " AND ".join(query_parts_no_album)
+            url = f"https://musicbrainz.org/ws/2/recording/?query={quote(query)}&fmt=json&limit=5"
+
+            response = requests.get(url, headers=headers, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                recordings = data.get("recordings", [])
+
         if not recordings:
             return None
 
