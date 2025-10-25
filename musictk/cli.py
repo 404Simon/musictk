@@ -44,7 +44,7 @@ def lyrics(directory: Path, lyrics_dir: Path | None) -> None:
 
 
 @main.command()
-@click.argument("directory", type=click.Path(exists=True, path_type=Path))
+@click.argument("path", type=click.Path(exists=True, path_type=Path))
 @click.option("--auto", is_flag=True, help="Automatic tagging mode")
 @click.option("--manual", is_flag=True, help="Manual editing mode")
 @click.option(
@@ -63,7 +63,7 @@ def lyrics(directory: Path, lyrics_dir: Path | None) -> None:
     help="JSON file path for manual mode (default: directory/tags.json)",
 )
 def tags(
-    directory: Path,
+    path: Path,
     auto: bool,
     manual: bool,
     no_cover: bool,
@@ -78,14 +78,15 @@ def tags(
 
     Examples:
       musictk tags ~/Music --auto
+      musictk tags ~/Music/song.mp3 --auto
       musictk tags ~/Music --manual
       musictk tags ~/Music --auto --no-cover
       musictk tags ~/Music --manual --json custom_tags.json
     """
-    directory = directory.resolve()
+    path = path.resolve()
 
-    if not directory.exists():
-        click.echo(f"Error: Directory not found: {directory}")
+    if not path.exists():
+        click.echo(f"Error: Path not found: {path}")
         sys.exit(1)
 
     if auto and manual:
@@ -119,12 +120,15 @@ def tags(
                 sys.exit(0)
 
     if mode == "manual":
-        final_json_path = json_path or directory / "tags.json"
-        manual_edit_mode(str(directory), str(final_json_path))
+        if path.is_file():
+            final_json_path = json_path or path.parent / "tags.json"
+        else:
+            final_json_path = json_path or path / "tags.json"
+        manual_edit_mode(str(path), str(final_json_path))
     elif mode == "auto":
         if json_path:
             click.echo("Warning: --json option is ignored in auto mode")
-        auto_tag_mode(str(directory), no_cover, delay)
+        auto_tag_mode(str(path), no_cover, delay)
 
 
 if __name__ == "__main__":

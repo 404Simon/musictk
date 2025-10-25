@@ -55,13 +55,19 @@ class MusicBrainzResult(TypedDict):
     mbid: str
 
 
-def get_audio_files(directory: str | Path) -> list[str]:
-    directory_path = Path(directory)
-    audio_files: list[str] = []
+def get_audio_files(path: str | Path) -> list[str]:
+    file_path = Path(path)
 
-    for file_path in directory_path.rglob("*"):
-        if file_path.is_file() and file_path.suffix.lower() in (".mp3", ".flac"):
-            audio_files.append(str(file_path))
+    if file_path.is_file():
+        if file_path.suffix.lower() in (".mp3", ".flac"):
+            return [str(file_path)]
+        else:
+            return []
+
+    audio_files: list[str] = []
+    for f in file_path.rglob("*"):
+        if f.is_file() and f.suffix.lower() in (".mp3", ".flac"):
+            audio_files.append(str(f))
 
     return sorted(audio_files)
 
@@ -576,10 +582,10 @@ def apply_auto_tags(file_path: str, tag_data: MusicBrainzResult) -> bool:
         return False
 
 
-def manual_edit_mode(directory: str, json_path: str) -> None:
+def manual_edit_mode(path: str, json_path: str) -> None:
     print("=== Manual Edit Mode ===")
     print("Scanning for MP3/FLAC files...")
-    audio_files = get_audio_files(directory)
+    audio_files = get_audio_files(path)
 
     if not audio_files:
         print("No MP3/FLAC files found!")
@@ -637,10 +643,10 @@ def manual_edit_mode(directory: str, json_path: str) -> None:
         print("\nNo changes detected in JSON file.")
 
 
-def auto_tag_mode(directory: str, no_cover: bool, delay: float) -> None:
+def auto_tag_mode(path: str, no_cover: bool, delay: float) -> None:
     print("=== Auto Tag Mode ===")
     print("Scanning for MP3/FLAC files...")
-    audio_files = get_audio_files(directory)
+    audio_files = get_audio_files(path)
 
     if not audio_files:
         print("No MP3/FLAC files found!")
