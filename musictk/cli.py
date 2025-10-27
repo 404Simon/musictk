@@ -23,23 +23,25 @@ def main() -> None:
 
 
 @main.command()
-@click.argument("directory", type=click.Path(exists=True, path_type=Path))
+@click.argument("path", type=click.Path(exists=True, path_type=Path))
 @click.option(
     "--lyrics-dir",
     type=click.Path(path_type=Path),
     help="Custom directory for lyrics files (default: ~/Music/mpd/lyrics)",
 )
-def lyrics(directory: Path, lyrics_dir: Path | None) -> None:
+def lyrics(path: Path, lyrics_dir: Path | None) -> None:
     """Fetch synced lyrics for your music library.
 
-    Scans DIRECTORY for audio files and downloads synced lyrics from lrclib.net.
+    Scans PATH for audio files and downloads synced lyrics from lrclib.net.
+    PATH can be either a directory or a single audio file.
     Supports MP3, FLAC, M4A, WAV, and OGG files.
 
     Examples:
       musictk lyrics ~/Music
+      musictk lyrics ~/Music/song.mp3
       musictk lyrics /path/to/album --lyrics-dir /custom/lyrics/path
     """
-    fetcher = LyricsFetcher(directory, lyrics_dir)
+    fetcher = LyricsFetcher(path, lyrics_dir)
     asyncio.run(fetcher.run())
 
 

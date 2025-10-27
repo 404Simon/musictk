@@ -22,9 +22,9 @@ class LyricsFetcher:
     )
 
     def __init__(
-        self, base_dir: str | Path, lyrics_dir: str | Path | None = None
+        self, base_path: str | Path, lyrics_dir: str | Path | None = None
     ) -> None:
-        self.base_dir = Path(base_dir)
+        self.base_path = Path(base_path)
         self.lyrics_dir = (
             Path(lyrics_dir) if lyrics_dir else Path.home() / "Music" / "mpd" / "lyrics"
         )
@@ -32,11 +32,12 @@ class LyricsFetcher:
         self.logger = self._setup_logging()
 
     def _setup_logging(self) -> logging.Logger:
+        log_dir = self.base_path if self.base_path.is_dir() else self.base_path.parent
         logging.basicConfig(
             level=logging.INFO,
             format="%(asctime)s - %(levelname)s - %(message)s",
             handlers=[
-                logging.FileHandler(self.base_dir / "lyrics_fetcher.log"),
+                logging.FileHandler(log_dir / "lyrics_fetcher.log"),
                 logging.StreamHandler(),
             ],
         )
@@ -45,17 +46,32 @@ class LyricsFetcher:
     def find_audio_files(self) -> list[Path]:
         audio_files: list[Path] = []
 
-        for file_path in self.base_dir.rglob("*"):
-            if (
-                file_path.is_file()
-                and file_path.suffix.lower() in self.SUPPORTED_FORMATS
-            ):
-                lrc_filename = file_path.stem + ".lrc"
+        # If base_path is a file, process just that file
+        if self.base_path.is_file():
+            if self.base_path.suffix.lower() in self.SUPPORTED_FORMATS:
+                lrc_filename = self.base_path.stem + ".lrc"
                 lrc_path = self.lyrics_dir / lrc_filename
                 if not lrc_path.exists():
-                    audio_files.append(file_path)
+                    audio_files.append(self.base_path)
                 else:
-                    self.logger.info(f"LRC already exists for {file_path.name}")
+                    self.logger.info(f"LRC already exists for {self.base_path.name}")
+            else:
+                self.logger.warning(
+                    f"File {self.base_path} is not a supported audio format"
+                )
+        # If base_path is a directory, recursively search for audio files
+        elif self.base_path.is_dir():
+            for file_path in self.base_path.rglob("*"):
+                if (
+                    file_path.is_file()
+                    and file_path.suffix.lower() in self.SUPPORTED_FORMATS
+                ):
+                    lrc_filename = file_path.stem + ".lrc"
+                    lrc_path = self.lyrics_dir / lrc_filename
+                    if not lrc_path.exists():
+                        audio_files.append(file_path)
+                    else:
+                        self.logger.info(f"LRC already exists for {file_path.name}")
 
         return audio_files
 
@@ -204,11 +220,12 @@ class LyricsFetcher:
         return self.save_lrc_file(file_path, lyrics_data)
 
     async def run(self) -> None:
-        if not self.base_dir.exists():
-            self.logger.error(f"Directory does not exist: {self.base_dir}")
+        if not self.base_path.exists():
+            self.logger.error(f"Path does not exist: {self.base_path}")
             return
 
-        self.logger.info(f"Starting lyrics fetch for directory: {self.base_dir}")
+        path_type = "file" if self.base_path.is_file() else "directory"
+        self.logger.info(f"Starting lyrics fetch for {path_type}: {self.base_path}")
 
         audio_files = self.find_audio_files()
         if not audio_files:
