@@ -8,6 +8,7 @@ from pathlib import Path
 
 import click
 
+from musictk.download import run_download
 from musictk.lyrics import LyricsFetcher
 from musictk.tags import auto_tag_mode, manual_edit_mode
 
@@ -131,6 +132,30 @@ def tags(
         if json_path:
             click.echo("Warning: --json option is ignored in auto mode")
         auto_tag_mode(str(path), no_cover, delay)
+
+
+@main.command()
+@click.argument("url", type=str)
+@click.option(
+    "--output-dir",
+    "-o",
+    type=click.Path(path_type=Path),
+    help="Output directory for downloaded file (default: current directory)",
+)
+def download(url: str, output_dir: Path | None) -> None:
+    """Download and tag music from YouTube or SoundCloud.
+
+    Downloads audio from URL using yt-dlp and automatically tags it with metadata.
+    Requires yt-dlp to be installed (pip install yt-dlp).
+
+    URL should be a valid YouTube or SoundCloud link.
+
+    Examples:
+      musictk download https://www.youtube.com/watch?v=dQw4w9WgXcQ
+      musictk download https://soundcloud.com/artist/track
+      musictk download <url> --output-dir ~/Music/Downloads
+    """
+    run_download(url, output_dir)
 
 
 if __name__ == "__main__":
