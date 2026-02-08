@@ -12,6 +12,8 @@ from mutagen.easyid3 import EasyID3
 from mutagen.id3 import APIC, ID3, error
 from mutagen.mp3 import MP3
 
+from musictk.mpd import update_mpd_database
+
 
 class DownloadError(Exception):
     """Exception raised when download fails."""
@@ -235,6 +237,9 @@ def run_download(url: str, output_dir: Path | None = None) -> None:
         mp3_path = download_and_tag(url, output_dir)
         click.echo()
         click.echo(f"Successfully saved to: {mp3_path}")
+
+        # Update MPD database if rmpc is installed
+        update_mpd_database()
     except DownloadError as e:
         click.echo(f"Error: {e}", err=True)
         raise click.Abort()

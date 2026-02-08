@@ -10,6 +10,7 @@ import click
 
 from musictk.download import run_download
 from musictk.lyrics import LyricsFetcher
+from musictk.playlist import sync_playlist
 from musictk.tags import auto_tag_mode, manual_edit_mode
 
 
@@ -156,6 +157,46 @@ def download(url: str, output_dir: Path | None) -> None:
       musictk download <url> --output-dir ~/Music/Downloads
     """
     run_download(url, output_dir)
+
+
+@main.group()
+def playlist() -> None:
+    """Manage m3u playlists.
+
+    Tools for synchronizing music folders with m3u playlist files.
+    """
+    pass
+
+
+@playlist.command()
+@click.option(
+    "--folder",
+    "-f",
+    type=click.Path(exists=True, path_type=Path),
+    help="Music folder to sync (default: current directory)",
+)
+@click.option(
+    "--playlist-dir",
+    "-p",
+    type=click.Path(path_type=Path),
+    help="Playlist directory (default: ~/Music/mpd/playlists)",
+)
+def sync(folder: Path | None, playlist_dir: Path | None) -> None:
+    """Sync a music folder to an m3u playlist.
+
+    Creates or updates an m3u playlist file based on all audio files
+    in the specified folder. The playlist name matches the folder name.
+
+    Audio files are added with relative paths from the playlist directory.
+
+    Supported formats: MP3, FLAC, M4A, WAV, OGG, OPUS, AAC, WMA
+
+    Examples:
+      musictk playlist sync
+      musictk playlist sync --folder ~/Music/Drums+Base
+      musictk playlist sync -f ~/Music/Jazz -p ~/playlists
+    """
+    sync_playlist(folder, playlist_dir)
 
 
 if __name__ == "__main__":
