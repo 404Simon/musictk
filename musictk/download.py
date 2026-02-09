@@ -6,6 +6,7 @@ import json
 import subprocess
 from pathlib import Path
 from typing import Any
+from urllib.request import urlopen
 
 import click
 from mutagen.easyid3 import EasyID3
@@ -30,6 +31,7 @@ class Metadata:
         self.album = data.get("album")
         self.track = data.get("track")
         self.release_date = data.get("release_date")
+        self.thumbnail = data.get("thumbnail")
 
     @property
     def year(self) -> int | None:
@@ -174,6 +176,61 @@ def tag_mp3(path: Path, metadata: Metadata) -> None:
         audio["date"] = str(metadata.year)
 
     audio.save()
+
+    # Add album art if thumbnail is available
+    if metadata.thumbnail:
+        add_album_art(path, metadata.thumbnail)
+
+
+def add_album_art(mp3_path: Path, thumbnail_url: str) -> None:
+    """Download thumbnail and embed as album art.
+
+    Args:
+        mp3_path: Path to MP3 file
+        thumbnail_url: URL of thumbnail image
+    """
+    try:
+        click.echo("Downloading album art...")
+
+        # Download thumbnail
+        with urlopen(thumbnail_url, timeout=30) as response:
+            image_data = response.read()
+
+        # Determine image type from content
+        if image_data.startswith(b"\xff\xd8\xff"):
+            mime_type = "image/jpeg"
+        elif image_data.startswith(b"\x89PNG"):
+            mime_type = "image/png"
+        elif image_data.startswith(b"WEBP", 8):
+            mime_type = "image/webp"
+        else:
+            click.echo("Warning: Unknown image format, skipping album art")
+            return
+
+        # Load the audio file with full ID3 support
+        audio = MP3(mp3_path, ID3=ID3)
+
+        # Ensure tags exist
+        if audio.tags is None:
+            audio.add_tags()
+
+        # Add album art
+        audio.tags.add(
+            APIC(
+                encoding=3,  # UTF-8
+                mime=mime_type,
+                type=3,  # Cover (front)
+                desc="Cover",
+                data=image_data,
+            )
+        )
+
+        audio.save()
+        click.echo("Album art embedded successfully")
+
+    except Exception as e:
+        click.echo(f"Warning: Could not add album art: {e}")
+        # Don't fail the entire download if album art fails
 
 
 def download_and_tag(url: str, output_dir: Path) -> Path:
