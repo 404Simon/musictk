@@ -9,7 +9,7 @@ Built with Python 3.13, strict typing, and modern best practices.
 ### 🎤 Lyrics Fetcher
 
 - Automatically fetch synced (timestamped) lyrics from lrclib.net
-- Supports MP3, FLAC, M4A, WAV, and OGG formats
+- Supports MP3, FLAC, M4A, WAV, OGG, and OPUS formats
 - Saves lyrics as LRC files compatible with music players (rmpc, etc.)
 - Async processing for lightning-fast execution
 - Smart duplicate detection (won't re-fetch existing lyrics)
@@ -23,7 +23,7 @@ Built with Python 3.13, strict typing, and modern best practices.
 
 #### Manual Mode
 
-1. **Extract**: Scans directory for MP3/FLAC files and exports all tags to JSON
+1. **Extract**: Scans directory for MP3/FLAC/OPUS files and exports all tags to JSON
 2. **Edit**: Opens JSON in nvim for bulk editing with full visibility
 3. **Apply**: Saves changes back to audio files automatically
 
@@ -117,4 +117,3 @@ uv run musictk tags /path/to/music --auto --delay 2.0
 - Python 3.13+
 - nvim (for manual tag editing mode)
 - Internet connection (for lyrics fetching and auto-tagging)
-

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -17,6 +18,7 @@ from mutagen._file import File as MutagenFile
 from mutagen.flac import FLAC, Picture
 from mutagen.id3._frames import APIC, COMM, TALB, TCON, TDRC, TIT2, TPE1, TPOS, TRCK
 from mutagen.mp3 import MP3
+from mutagen.oggopus import OggOpus
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -55,18 +57,21 @@ class MusicBrainzResult(TypedDict):
     mbid: str
 
 
+SUPPORTED_EXTENSIONS: tuple[str, ...] = (".mp3", ".flac", ".opus")
+
+
 def get_audio_files(path: str | Path) -> list[str]:
     file_path = Path(path)
 
     if file_path.is_file():
-        if file_path.suffix.lower() in (".mp3", ".flac"):
+        if file_path.suffix.lower() in SUPPORTED_EXTENSIONS:
             return [str(file_path)]
         else:
             return []
 
     audio_files: list[str] = []
     for f in file_path.rglob("*"):
-        if f.is_file() and f.suffix.lower() in (".mp3", ".flac"):
+        if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS:
             audio_files.append(str(f))
 
     return sorted(audio_files)
@@ -128,7 +133,7 @@ def extract_tags(file_path: str) -> AudioTags | None:
             if comm_frames:
                 tags["comment"] = str(comm_frames)
 
-        elif isinstance(audio_file, FLAC):
+        elif isinstance(audio_file, (FLAC, OggOpus)):
             artist_tag = audio_file.get("ARTIST")
             tags["artist"] = str(artist_tag[0]) if artist_tag else ""
             album_tag = audio_file.get("ALBUM")
@@ -141,11 +146,13 @@ def extract_tags(file_path: str) -> AudioTags | None:
             tags["genre"] = str(genre_tag[0]) if genre_tag else ""
             tracknum_tag = audio_file.get("TRACKNUMBER")
             tags["track_num"] = str(tracknum_tag[0]) if tracknum_tag else ""
-            tracktotal_tag = audio_file.get("TRACKTOTAL")
+            tracktotal_tag = audio_file.get("TRACKTOTAL") or audio_file.get(
+                "TOTALTRACKS"
+            )
             tags["track_total"] = str(tracktotal_tag[0]) if tracktotal_tag else ""
             discnum_tag = audio_file.get("DISCNUMBER")
             tags["disc_num"] = str(discnum_tag[0]) if discnum_tag else ""
-            disctotal_tag = audio_file.get("DISCTOTAL")
+            disctotal_tag = audio_file.get("DISCTOTAL") or audio_file.get("TOTALDISCS")
             tags["disc_total"] = str(disctotal_tag[0]) if disctotal_tag else ""
             comment_tag = audio_file.get("COMMENT")
             tags["comment"] = str(comment_tag[0]) if comment_tag else ""
@@ -229,7 +236,7 @@ def apply_tags(tags: dict[str, Any]) -> bool:
                     encoding=3, lang="eng", desc="", text=[tags["comment"]]
                 )
 
-        elif isinstance(audio_file, FLAC):
+        elif isinstance(audio_file, (FLAC, OggOpus)):
             if tags.get("artist"):
                 audio_file["ARTIST"] = [tags["artist"]]
             if tags.get("album"):
@@ -287,7 +294,7 @@ def extract_basic_info(file_path: str) -> BasicInfo | None:
                 title = str(tit2[0]) if tit2 else ""
                 talb = audio_file.get("TALB")
                 album = str(talb[0]) if talb else ""
-            elif isinstance(audio_file, FLAC):
+            elif isinstance(audio_file, (FLAC, OggOpus)):
                 artist_tag = audio_file.get("ARTIST")
                 artist = str(artist_tag[0]) if artist_tag else ""
                 title_tag = audio_file.get("TITLE")
@@ -525,6 +532,17 @@ def embed_cover_art(file_path: str, cover_data: bytes) -> bool:
             audio_file.add_picture(picture)
             audio_file.save()
             return True
+        elif isinstance(audio_file, OggOpus):
+            picture = Picture()
+            picture.data = cover_data
+            picture.type = 3
+            picture.mime = "image/jpeg"
+            picture.desc = "Cover"
+
+            encoded_picture = base64.b64encode(picture.write()).decode("ascii")
+            audio_file["METADATA_BLOCK_PICTURE"] = [encoded_picture]
+            audio_file.save()
+            return True
 
         return False
 
@@ -558,7 +576,7 @@ def apply_auto_tags(file_path: str, tag_data: MusicBrainzResult) -> bool:
             if track_str:
                 audio_file["TRCK"] = TRCK(encoding=3, text=[track_str])
 
-        elif isinstance(audio_file, FLAC):
+        elif isinstance(audio_file, (FLAC, OggOpus)):
             if tag_data.get("title"):
                 audio_file["TITLE"] = [tag_data["title"]]
             if tag_data.get("artist"):
@@ -584,11 +602,11 @@ def apply_auto_tags(file_path: str, tag_data: MusicBrainzResult) -> bool:
 
 def manual_edit_mode(path: str, json_path: str) -> None:
     print("=== Manual Edit Mode ===")
-    print("Scanning for MP3/FLAC files...")
+    print("Scanning for MP3/FLAC/OPUS files...")
     audio_files = get_audio_files(path)
 
     if not audio_files:
-        print("No MP3/FLAC files found!")
+        print("No MP3/FLAC/OPUS files found!")
         raise click.Abort
 
     print(f"Found {len(audio_files)} files")
@@ -645,11 +663,11 @@ def manual_edit_mode(path: str, json_path: str) -> None:
 
 def auto_tag_mode(path: str, no_cover: bool, delay: float) -> None:
     print("=== Auto Tag Mode ===")
-    print("Scanning for MP3/FLAC files...")
+    print("Scanning for MP3/FLAC/OPUS files...")
     audio_files = get_audio_files(path)
 
     if not audio_files:
-        print("No MP3/FLAC files found!")
+        print("No MP3/FLAC/OPUS files found!")
         raise click.Abort
 
     print(f"Found {len(audio_files)} files")

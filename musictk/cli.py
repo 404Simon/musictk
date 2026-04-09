@@ -36,7 +36,7 @@ def lyrics(path: Path, lyrics_dir: Path | None) -> None:
 
     Scans PATH for audio files and downloads synced lyrics from lrclib.net.
     PATH can be either a directory or a single audio file.
-    Supports MP3, FLAC, M4A, WAV, and OGG files.
+    Supports MP3, FLAC, M4A, WAV, OGG, and OPUS files.
 
     Examples:
       musictk lyrics ~/Music

@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 class LyricsFetcher:
     API_BASE_URL: str = "https://lrclib.net"
     SUPPORTED_FORMATS: frozenset[str] = frozenset(
-        {".mp3", ".flac", ".m4a", ".wav", ".ogg"}
+        {".mp3", ".flac", ".m4a", ".wav", ".ogg", ".opus"}
     )
 
     def __init__(
