@@ -14,6 +14,13 @@ Built with Python 3.13, strict typing, and modern best practices.
 - Async processing for lightning-fast execution
 - Smart duplicate detection (won't re-fetch existing lyrics)
 
+### 📋 Playlist Sync
+
+- Create or update m3u playlist files from music folders
+- Relative paths for portable playlists (works across systems)
+- Automatic MPD database refresh after sync
+- Supports MP3, FLAC, M4A, WAV, OGG, OPUS, AAC, WMA
+
 ### 🏷️ Tag Editor
 
 > [!TIP]
@@ -63,38 +70,74 @@ uv run ruff check musictk/
 ### Lyrics Fetcher
 
 ```bash
-uv run musictk lyrics ~/Music
+musictk lyrics ~/Music
 
-uv run musictk lyrics /path/to/album --lyrics-dir /custom/lyrics/path
+musictk lyrics /path/to/album --lyrics-dir /custom/lyrics/path
 ```
 
 Lyrics are saved to `~/Music/mpd/lyrics/` by default (configurable with `--lyrics-dir`).
+
+### Playlist Sync
+
+```bash
+musictk playlist sync
+
+musictk playlist sync --folder ~/Music/Drums+Base
+
+musictk playlist sync -f ~/Music/Jazz -p ~/playlists
+```
+
+Creates an `.m3u` playlist named after the folder (e.g. `Drums+Base.m3u`).
+If the playlist already exists it is updated silently; otherwise you are
+prompted to confirm creation. Playlists are saved to `~/Music/mpd/playlists/`
+by default (configurable with `--playlist-dir`/`-p`). After writing, the MPD
+database is refreshed automatically via `rmpc update` if available.
 
 ### Tag Editor
 
 #### Interactive Mode (Choose at Runtime)
 
 ```bash
-uv run musictk tags /path/to/music
+musictk tags /path/to/music
 ```
 
 #### Manual Editing Mode
 
 ```bash
-uv run musictk tags /path/to/music --manual
+musictk tags /path/to/music --manual
 
-uv run musictk tags /path/to/music --manual --json /path/to/tags.json
+musictk tags /path/to/music --manual --json /path/to/tags.json
 ```
 
 #### Automatic Tagging Mode
 
 ```bash
-uv run musictk tags /path/to/music --auto
+musictk tags /path/to/music --auto
 
-uv run musictk tags /path/to/music --auto --no-cover
+musictk tags /path/to/music --auto --no-cover
 
-uv run musictk tags /path/to/music --auto --delay 2.0
+musictk tags /path/to/music --auto --delay 2.0
 ```
+
+### Downloader + Search
+
+```bash
+musictk download "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+
+musictk download https://soundcloud.com/monstercat/arcando-pirapus-ultrasound
+
+musictk download "$(wl-paste)"
+
+musictk search griechischer wein
+
+musictk search "arcando california dreamin" --output-dir ~/Music/DNB
+```
+
+`search` shows the top 5 YouTube results from `yt-dlp`, lets you pick one interactively,
+and then downloads + tags it just like `download`.
+
+For YouTube downloads, sponsor/ad segments (`music_offtopic`, `intro`, `outro`) are removed
+and long videos are filtered (`<= 10 minutes`).
 
 ## 🛠️ Technical Details
 
