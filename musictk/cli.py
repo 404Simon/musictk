@@ -8,7 +8,7 @@ from pathlib import Path
 
 import click
 
-from musictk.download import run_download
+from musictk.download import run_download, run_search_download
 from musictk.lyrics import LyricsFetcher
 from musictk.playlist import sync_playlist
 from musictk.tags import auto_tag_mode, manual_edit_mode
@@ -157,6 +157,29 @@ def download(url: str, output_dir: Path | None) -> None:
       musictk download <url> --output-dir ~/Music/Downloads
     """
     run_download(url, output_dir)
+
+
+@main.command()
+@click.argument("query", nargs=-1, required=True)
+@click.option(
+    "--output-dir",
+    "-o",
+    type=click.Path(path_type=Path),
+    help="Output directory for downloaded file (default: current directory)",
+)
+def search(query: tuple[str, ...], output_dir: Path | None) -> None:
+    """Search YouTube, pick one result, download and tag it.
+
+    Shows top 5 duration-filtered YouTube results from yt-dlp,
+    prompts for selection, then downloads and tags the chosen track.
+
+    Examples:
+      musictk search griechischer wein
+      musictk search daft punk harder better faster stronger
+      musictk search "falco rock me amadeus" --output-dir ~/Music/Downloads
+    """
+    search_query = " ".join(query).strip()
+    run_search_download(search_query, output_dir)
 
 
 @main.group()
