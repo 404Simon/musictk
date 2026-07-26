@@ -11,6 +11,7 @@ import click
 from musictk.download import run_download, run_search_download
 from musictk.lyrics import LyricsFetcher
 from musictk.playlist import sync_playlist
+from musictk.similar import run_similar
 from musictk.tags import auto_tag_mode, manual_edit_mode
 
 
@@ -180,6 +181,46 @@ def search(query: tuple[str, ...], output_dir: Path | None) -> None:
     """
     search_query = " ".join(query).strip()
     run_search_download(search_query, output_dir)
+
+
+@main.command()
+@click.argument("args", nargs=-1)
+def similar(args: tuple[str, ...]) -> None:
+    """Find and download similar tracks via Last.fm.
+
+    Scans the current directory for audio files, looks up each track on
+    Last.fm for similar recommendations, and stops once enough unique
+    results have accumulated (default 3). Tracks already in the directory
+    are skipped.
+
+    With a query argument, searches Last.fm for that track instead.
+
+    Requires LASTFM_API_KEY environment variable.
+
+    Examples:
+
+      musictk similar
+
+      musictk similar 5
+
+      musictk similar "The Weeknd - Blinding Lights"
+
+      musictk similar "The Weeknd - Blinding Lights" 5
+    """
+    search_text: str | None = None
+    quantity: int | None = None
+
+    if args:
+        if args[-1].isdigit():
+            quantity = int(args[-1])
+            rest = args[:-1]
+        else:
+            rest = args
+
+        if rest:
+            search_text = " ".join(rest).strip()
+
+    run_similar(search_text, quantity)
 
 
 @main.group()

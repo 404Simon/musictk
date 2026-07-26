@@ -14,6 +14,18 @@ Built with Python 3.13, strict typing, and modern best practices.
 - Async processing for lightning-fast execution
 - Smart duplicate detection (won't re-fetch existing lyrics)
 
+### 🔍 Similar Track Discovery
+
+- Find similar tracks via the Last.fm API
+- Scan current directory for audio files (or search by query text)
+- Walks source tracks in directory order, fetching recommendations for
+  each, and stops once the requested number of unique results accumulate
+- Skips tracks that already exist in the target directory
+- Automatically downloads the best YouTube match as Opus via yt-dlp
+- Applies ReplayGain (R128_TRACK_GAIN) via ffmpeg loudnorm
+- Embeds metadata and sanitizes filenames
+- Requires `LASTFM_API_KEY` environment variable (get one at <https://last.fm/api>)
+
 ### 📋 Playlist Sync
 
 - Create or update m3u playlist files from music folders
@@ -42,6 +54,7 @@ Built with Python 3.13, strict typing, and modern best practices.
 4. **Apply**: Updates audio files with correct tags and embedded artwork
 
 **Supported Metadata:**
+
 - Basic: Artist, Album, Title, Year, Genre
 - Track info: Track number/total, Disc number/total
 - Other: Comments, cover art (embedded + separate files)
@@ -139,6 +152,30 @@ and then downloads + tags it just like `download`.
 For YouTube downloads, sponsor/ad segments (`music_offtopic`, `intro`, `outro`) are removed
 and long videos are filtered (`<= 10 minutes`).
 
+### Similar Track Discovery
+
+```bash
+export LASTFM_API_KEY="your_key_here"
+
+musictk similar
+
+musictk similar 5
+
+musictk similar "The Weeknd - Blinding Lights"
+
+musictk similar "The Weeknd - Blinding Lights" 5
+```
+
+Without any arguments, scans the current directory for audio files and walks them
+in filesystem order. For each, it fetches similar tracks from Last.fm and stops
+once the requested number (default 3) of unique, non-duplicate results have
+accumulated. It then downloads the best YouTube match for each result as Opus,
+applies ReplayGain via ffmpeg, embeds metadata, and saves to the current
+directory. Tracks already in the directory are automatically skipped.
+Temporary files are written to `.similar_tmp/` and cleaned up on completion.
+
+Requires `yt-dlp` and `ffmpeg` to be installed, and `LASTFM_API_KEY` must be set in the environment (get one at <https://last.fm/api>). Only the API key is needed - no secret required.
+
 ## 🛠️ Technical Details
 
 - **Python Version**: 3.13+
@@ -159,4 +196,6 @@ and long videos are filtered (`<= 10 minutes`).
 
 - Python 3.13+
 - nvim (for manual tag editing mode)
-- Internet connection (for lyrics fetching and auto-tagging)
+- yt-dlp (for download/search/similar commands)
+- ffmpeg (for ReplayGain in similar command)
+- Internet connection (for lyrics fetching, auto-tagging, and similar discovery)
