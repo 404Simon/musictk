@@ -9,6 +9,7 @@ dependencies = [
     "click>=8.1.0",
     "mutagen>=1.47.0",
     "requests>=2.31.0",
+    "ytmusicapi>=1.0",
 ]
 
 [project.optional-dependencies]
@@ -55,6 +56,10 @@ disable_error_code = ["no-untyped-call"]
 
 [[tool.mypy.overrides]]
 module = "mutagen.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "ytmusicapi.*"
 ignore_missing_imports = true
 
 [tool.ruff]

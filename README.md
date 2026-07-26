@@ -33,6 +33,15 @@ Built with Python 3.13, strict typing, and modern best practices.
 - Automatic MPD database refresh after sync
 - Supports MP3, FLAC, M4A, WAV, OGG, OPUS, AAC, WMA
 
+### 💿 Album Download
+
+- **Download** an entire YouTube Music album with a single URL via `musictk download -a`
+- **Search** for albums interactively on YouTube Music via `musictk search -a`
+- Uses ytmusicapi for structured album search (no API key required)
+- Automatically embeds album art into all tracks
+- Tracks are organized into `<Artist> - <Album>/<NN> - <Title>.mp3`
+- Leverages yt-dlp for reliable audio extraction and metadata embedding
+
 ### 🏷️ Tag Editor
 
 > [!TIP]
@@ -152,6 +161,26 @@ and then downloads + tags it just like `download`.
 For YouTube downloads, sponsor/ad segments (`music_offtopic`, `intro`, `outro`) are removed
 and long videos are filtered (`<= 10 minutes`).
 
+### 💿 Album Download
+
+```bash
+# Download an album by YouTube Music playlist URL
+musictk download -a "https://music.youtube.com/playlist?list=OLAK5uy_nMr9h2VlS-2PULNz3M3XVXQj_P3C2bqaY"
+
+# Search for an album interactively
+musictk search -a "Nevermind"
+
+musictk search -a "daft punk discovery" -o ~/Music/Downloads
+```
+
+`download -a` fetches the track listing, asks for confirmation, then downloads
+the full album. Tracks are saved as `<Artist> - <Album>/<NN> - <Title>.mp3`
+with embedded metadata and album art.
+
+`search -a` queries YouTube Music's album catalog (via ytmusicapi, no API key
+needed), shows matching albums with year, picks your choice, and downloads the
+entire album. Progress is shown in real-time via yt-dlp's output.
+
 ### Similar Track Discovery
 
 ```bash
@@ -182,7 +211,7 @@ Requires `yt-dlp` and `ffmpeg` to be installed, and `LASTFM_API_KEY` must be set
 - **Type Safety**: Fully typed with mypy strict mode
 - **Code Quality**: Black, isort, and ruff for formatting and linting
 - **Async Support**: asyncio for concurrent operations
-- **Dependencies**: click, mutagen, aiohttp, requests
+- **Dependencies**: click, mutagen, aiohttp, requests, ytmusicapi
 
 ## 🎯 Use Cases
 

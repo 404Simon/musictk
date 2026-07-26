@@ -144,7 +144,13 @@ def tags(
     type=click.Path(path_type=Path),
     help="Output directory for downloaded file (default: current directory)",
 )
-def download(url: str, output_dir: Path | None) -> None:
+@click.option(
+    "--album",
+    "-a",
+    is_flag=True,
+    help="Download an entire album (URL should be a YouTube Music album/playlist link)",
+)
+def download(url: str, output_dir: Path | None, album: bool) -> None:
     """Download and tag music from YouTube or SoundCloud.
 
     Downloads audio from URL using yt-dlp and automatically tags it with metadata.
@@ -156,8 +162,9 @@ def download(url: str, output_dir: Path | None) -> None:
       musictk download https://www.youtube.com/watch?v=dQw4w9WgXcQ
       musictk download https://soundcloud.com/artist/track
       musictk download <url> --output-dir ~/Music/Downloads
+      musictk download -a https://music.youtube.com/playlist?list=OLAK5uy_...
     """
-    run_download(url, output_dir)
+    run_download(url, output_dir, album=album)
 
 
 @main.command()
@@ -168,19 +175,29 @@ def download(url: str, output_dir: Path | None) -> None:
     type=click.Path(path_type=Path),
     help="Output directory for downloaded file (default: current directory)",
 )
-def search(query: tuple[str, ...], output_dir: Path | None) -> None:
+@click.option(
+    "--album",
+    "-a",
+    is_flag=True,
+    help="Search for an album on YouTube Music and download all tracks",
+)
+def search(query: tuple[str, ...], output_dir: Path | None, album: bool) -> None:
     """Search YouTube, pick one result, download and tag it.
 
     Shows top 5 duration-filtered YouTube results from yt-dlp,
     prompts for selection, then downloads and tags the chosen track.
 
+    With --album, searches YouTube Music for albums instead of individual tracks.
+
     Examples:
       musictk search griechischer wein
       musictk search daft punk harder better faster stronger
       musictk search "falco rock me amadeus" --output-dir ~/Music/Downloads
+      musictk search -a nevermind nirvana
+      musictk search -a "daft punk discovery" -o ~/Music/Downloads
     """
     search_query = " ".join(query).strip()
-    run_search_download(search_query, output_dir)
+    run_search_download(search_query, output_dir, album=album)
 
 
 @main.command()

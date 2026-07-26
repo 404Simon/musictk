@@ -560,7 +560,7 @@ def run_similar(
         query = f"{artist} - {title}"
         print(f"\n  {query}")
 
-        tmp_template = str(tmp_dir / "%(title)s [%(id)s].%(ext)s")
+        tmp_template = str(tmp_dir / "%(title)s.%(ext)s")
         metadata = _ytdlp_search_download(query, tmp_template)
         if not metadata:
             skipped += 1
