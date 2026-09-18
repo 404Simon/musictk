@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -17,6 +18,9 @@ if TYPE_CHECKING:
 
 class LyricsFetcher:
     API_BASE_URL: str = "https://lrclib.net"
+    MAX_CONCURRENT_REQUESTS: int = 3
+    MAX_REQUEST_ATTEMPTS: int = 4
+    RETRYABLE_STATUSES: frozenset[int] = frozenset({429, 502, 503, 504})
     SUPPORTED_FORMATS: frozenset[str] = frozenset(
         {".mp3", ".flac", ".m4a", ".wav", ".ogg", ".opus"}
     )
@@ -30,6 +34,7 @@ class LyricsFetcher:
         )
         self.lyrics_dir.mkdir(parents=True, exist_ok=True)
         self.logger = self._setup_logging()
+        self.request_semaphore = asyncio.Semaphore(self.MAX_CONCURRENT_REQUESTS)
 
     def _setup_logging(self) -> logging.Logger:
         log_dir = self.base_path if self.base_path.is_dir() else self.base_path.parent
@@ -120,47 +125,104 @@ class LyricsFetcher:
     async def search_lyrics(
         self, session: aiohttp.ClientSession, metadata: dict[str, str | int]
     ) -> dict[str, str | int] | None:
-        try:
-            params: dict[str, str] = {}
+        params: dict[str, str] = {}
 
+        if "title" in metadata:
+            params["track_name"] = str(metadata["title"])
+        if "artist" in metadata:
+            params["artist_name"] = str(metadata["artist"])
+        if "album" in metadata:
+            params["album_name"] = str(metadata["album"])
+
+        if not params.get("track_name") and not params.get("artist_name"):
             if "title" in metadata:
-                params["track_name"] = str(metadata["title"])
-            if "artist" in metadata:
-                params["artist_name"] = str(metadata["artist"])
-            if "album" in metadata:
-                params["album_name"] = str(metadata["album"])
-
-            if not params.get("track_name") and not params.get("artist_name"):
-                if "title" in metadata:
-                    params["q"] = str(metadata["title"])
-                else:
-                    return None
-
-            url = f"{self.API_BASE_URL}/api/search"
-            self.logger.info(f"Searching lyrics with params: {params}")
-
-            headers = {"User-Agent": "musictk (https://github.com/404Simon/musictk)"}
-            async with session.get(
-                url,
-                params=params,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as response:
-                response.raise_for_status()
-                results: list[dict[str, str | int]] = await response.json()
-
-            if results and isinstance(results, list) and len(results) > 0:
-                return results[0]
+                params["q"] = str(metadata["title"])
             else:
-                self.logger.warning("No lyrics found")
                 return None
 
-        except aiohttp.ClientError as e:
-            self.logger.error(f"Error searching lyrics: {e}")
-            return None
-        except json.JSONDecodeError as e:
-            self.logger.error(f"Error parsing API response: {e}")
-            return None
+        url = f"{self.API_BASE_URL}/api/search"
+        self.logger.info(f"Searching lyrics with params: {params}")
+        headers = {"User-Agent": "musictk (https://github.com/404Simon/musictk)"}
+
+        for attempt in range(1, self.MAX_REQUEST_ATTEMPTS + 1):
+            try:
+                async with (
+                    self.request_semaphore,
+                    session.get(
+                        url,
+                        params=params,
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=10),
+                    ) as response,
+                ):
+                    if response.status in self.RETRYABLE_STATUSES:
+                        retry_after = response.headers.get("Retry-After")
+                        await response.read()
+                        if attempt == self.MAX_REQUEST_ATTEMPTS:
+                            self.logger.error(
+                                "Lyrics service still unavailable after %d "
+                                "attempts (HTTP %d) for %s",
+                                attempt,
+                                response.status,
+                                params,
+                            )
+                            return None
+
+                        delay = self._retry_delay(attempt, retry_after)
+                        self.logger.warning(
+                            "Lyrics service returned HTTP %d; retrying in "
+                            "%.1fs (attempt %d/%d)",
+                            response.status,
+                            delay,
+                            attempt + 1,
+                            self.MAX_REQUEST_ATTEMPTS,
+                        )
+                    else:
+                        response.raise_for_status()
+                        results: list[dict[str, str | int]] = await response.json()
+                        if results:
+                            return results[0]
+
+                        self.logger.warning("No lyrics found")
+                        return None
+
+                await asyncio.sleep(delay)
+            except (aiohttp.ClientConnectionError, TimeoutError) as e:
+                if attempt == self.MAX_REQUEST_ATTEMPTS:
+                    self.logger.error(
+                        "Lyrics request failed after %d attempts: %s", attempt, e
+                    )
+                    return None
+
+                delay = self._retry_delay(attempt)
+                self.logger.warning(
+                    "Temporary lyrics request error: %s; retrying in %.1fs "
+                    "(attempt %d/%d)",
+                    e,
+                    delay,
+                    attempt + 1,
+                    self.MAX_REQUEST_ATTEMPTS,
+                )
+                await asyncio.sleep(delay)
+            except aiohttp.ClientError as e:
+                self.logger.error(f"Error searching lyrics: {e}")
+                return None
+            except json.JSONDecodeError as e:
+                self.logger.error(f"Error parsing API response: {e}")
+                return None
+
+        return None
+
+    @staticmethod
+    def _retry_delay(attempt: int, retry_after: str | None = None) -> float:
+        """Calculate a bounded exponential retry delay with jitter."""
+        if retry_after is not None:
+            try:
+                return min(max(float(retry_after), 0.0), 30.0)
+            except ValueError:
+                pass
+
+        return float(min(2 ** (attempt - 1) + random.uniform(0.0, 0.5), 30.0))
 
     def save_lrc_file(
         self, audio_file_path: Path, lyrics_data: dict[str, str | int]
