@@ -389,15 +389,25 @@ def _build_download_args(
     return args
 
 
-def download_album(album_url: str, output_dir: Path) -> list[Path]:
-    """Download all tracks in an album and return list of created MP3 paths."""
-    output_template = str(
-        output_dir
-        / "%(album_artist,uploader)s - %(album,playlist_title)s"
-        / "%(playlist_index)02d - %(title)s.%(ext)s"
-    )
+def _safe_directory_name(value: str) -> str:
+    """Return a single safe path component while preserving readable names."""
+    name = value.replace("/", "_").replace("\0", "").strip()
+    return name if name not in {"", ".", ".."} else "Unknown Album"
 
-    before = set(output_dir.rglob("*.mp3"))
+
+def download_album(
+    album_url: str,
+    output_dir: Path,
+    artist: str,
+    album_title: str,
+) -> list[Path]:
+    """Download all tracks in an album and return list of created MP3 paths."""
+    album_dir = output_dir / _safe_directory_name(f"{artist} - {album_title}")
+    # Literal percent signs must be escaped inside a yt-dlp output template.
+    album_dir_template = str(album_dir).replace("%", "%%")
+    output_template = str(
+        Path(album_dir_template) / "%(playlist_index)02d - %(title)s.%(ext)s"
+    )
 
     try:
         subprocess.run(
@@ -410,12 +420,30 @@ def download_album(album_url: str, output_dir: Path) -> list[Path]:
     except subprocess.TimeoutExpired as e:
         raise DownloadError("Album download timed out") from e
 
-    created = [f for f in output_dir.rglob("*.mp3") if f not in before]
-    if not created:
+    paths = list(album_dir.glob("*.mp3"))
+    if not paths:
         raise DownloadError("No files were downloaded")
 
-    created.sort(key=lambda f: f.stat().st_mtime)
-    return created
+    # The output filename starts with playlist_index, so sorting by path restores
+    # the album order even when several files have the same modification time.
+    paths.sort(key=lambda f: f.name)
+    tag_album_track_numbers(paths)
+    return paths
+
+
+def tag_album_track_numbers(paths: list[Path]) -> None:
+    """Set track numbers from the downloaded playlist order."""
+    total = len(paths)
+    for track_number, path in enumerate(paths, start=1):
+        try:
+            audio = MP3(path, ID3=EasyID3)
+        except error:
+            audio = MP3(path)
+            audio.add_tags()
+            audio = MP3(path, ID3=EasyID3)
+
+        audio["tracknumber"] = f"{track_number}/{total}"
+        audio.save()
 
 
 def download_audio(url: str, output_dir: Path) -> Path:
@@ -480,8 +508,8 @@ def tag_mp3(path: Path, metadata: Metadata) -> None:
         add_album_art(path, metadata.thumbnail)
 
 
-def add_album_art(mp3_path: Path, thumbnail_url: str) -> None:
-    """Download thumbnail and embed as album art."""
+def download_album_art(thumbnail_url: str) -> tuple[bytes, str] | None:
+    """Download album art once and return its bytes and MIME type."""
     try:
         click.echo("Downloading album art...")
 
@@ -496,7 +524,17 @@ def add_album_art(mp3_path: Path, thumbnail_url: str) -> None:
             mime_type = "image/webp"
         else:
             click.echo("Warning: Unknown image format, skipping album art")
-            return
+            return None
+
+        return image_data, mime_type
+    except Exception as e:
+        click.echo(f"Warning: Could not download album art: {e}")
+        return None
+
+
+def embed_album_art(mp3_path: Path, image_data: bytes, mime_type: str) -> bool:
+    """Embed already downloaded album art into an MP3 file."""
+    try:
 
         audio = MP3(mp3_path, ID3=ID3)
 
@@ -506,7 +544,7 @@ def add_album_art(mp3_path: Path, thumbnail_url: str) -> None:
         tags = audio.tags
         if tags is None:
             click.echo("Warning: Could not initialize ID3 tags")
-            return
+            return False
 
         tags.add(
             APIC(
@@ -519,10 +557,28 @@ def add_album_art(mp3_path: Path, thumbnail_url: str) -> None:
         )
 
         audio.save()
-        click.echo("Album art embedded successfully")
+        return True
 
     except Exception as e:
         click.echo(f"Warning: Could not add album art: {e}")
+        return False
+
+
+def add_album_art(mp3_path: Path, thumbnail_url: str) -> None:
+    """Download thumbnail and embed it as album art into one MP3 file."""
+    album_art = download_album_art(thumbnail_url)
+    if album_art is not None and embed_album_art(mp3_path, *album_art):
+        click.echo("Album art embedded successfully")
+
+
+def add_album_art_to_tracks(paths: list[Path], thumbnail_url: str) -> None:
+    """Download album art once and embed it into all album tracks."""
+    album_art = download_album_art(thumbnail_url)
+    if album_art is None:
+        return
+
+    embedded = sum(embed_album_art(path, *album_art) for path in paths)
+    click.echo(f"Album art embedded in {embedded}/{len(paths)} tracks")
 
 
 def download_and_tag(url: str, output_dir: Path) -> Path:
@@ -543,10 +599,10 @@ def download_and_tag(url: str, output_dir: Path) -> Path:
     return mp3_path
 
 
-def _show_playlist_tracks(url: str) -> tuple[str, list[dict[str, Any]]]:
+def _show_playlist_tracks(url: str) -> tuple[str, str, list[dict[str, Any]]]:
     """Fetch and display playlist/album track listing.
 
-    Returns: (playlist_title, list_of_track_dicts_from_ytdlp)
+    Returns: (playlist_title, artist, list_of_track_dicts_from_ytdlp)
     """
     try:
         result = subprocess.run(
@@ -561,6 +617,7 @@ def _show_playlist_tracks(url: str) -> tuple[str, list[dict[str, Any]]]:
 
     tracks: list[dict[str, Any]] = []
     playlist_title: str = "Unknown Album"
+    artist: str = "Unknown Artist"
     for line in result.stdout.splitlines():
         line = line.strip()
         if not line:
@@ -572,6 +629,13 @@ def _show_playlist_tracks(url: str) -> tuple[str, list[dict[str, Any]]]:
         if not isinstance(entry, dict):
             continue
         playlist_title = entry.get("playlist_title") or playlist_title
+        if not tracks:
+            artist = (
+                entry.get("album_artist")
+                or entry.get("artist")
+                or entry.get("uploader")
+                or artist
+            )
         tracks.append(entry)
 
     click.echo(f"Album: {playlist_title}")
@@ -584,12 +648,10 @@ def _show_playlist_tracks(url: str) -> tuple[str, list[dict[str, Any]]]:
         dur = int(raw_dur) if isinstance(raw_dur, int | float) else None
         click.echo(f"  {i:2d}. {title} [{format_duration(dur)}]")
 
-    return playlist_title, tracks
+    return playlist_title, artist, tracks
 
 
-def run_download(
-    url: str, output_dir: Path | None = None, album: bool = False
-) -> None:
+def run_download(url: str, output_dir: Path | None = None, album: bool = False) -> None:
     """Main entry point for download command."""
     if not check_ytdlp():
         click.echo("Error: yt-dlp is not installed or not found in PATH", err=True)
@@ -607,19 +669,18 @@ def run_download(
         click.echo()
 
         try:
-            _show_playlist_tracks(url)
+            album_title, artist, _ = _show_playlist_tracks(url)
             click.echo()
             click.confirm("Download this album?", default=True, abort=True)
             click.echo()
 
-            paths = download_album(url, output_dir)
+            paths = download_album(url, output_dir, artist, album_title)
             click.echo(f"Downloaded {len(paths)} tracks")
 
             meta = extract_metadata(url)
             if meta.thumbnail:
                 click.echo("Embedding album art...")
-                for p in paths:
-                    add_album_art(p, meta.thumbnail)
+                add_album_art_to_tracks(paths, meta.thumbnail)
 
             update_mpd_database()
         except DownloadError as e:
@@ -708,13 +769,12 @@ def run_search_download(
         click.echo()
 
         try:
-            paths = download_album(playlist_url, output_dir)
+            paths = download_album(playlist_url, output_dir, artist, album_title)
             click.echo(f"Downloaded {len(paths)} tracks")
 
             if album_thumbnail:
                 click.echo("Embedding album art...")
-                for p in paths:
-                    add_album_art(p, album_thumbnail)
+                add_album_art_to_tracks(paths, album_thumbnail)
 
             update_mpd_database()
         except DownloadError as e:
