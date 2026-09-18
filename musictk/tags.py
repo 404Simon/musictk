@@ -6,8 +6,10 @@ import base64
 import hashlib
 import json
 import os
+import re
 import subprocess
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict
 from urllib.parse import quote
@@ -16,9 +18,23 @@ import click
 import requests
 from mutagen._file import File as MutagenFile
 from mutagen.flac import FLAC, Picture
-from mutagen.id3._frames import APIC, COMM, TALB, TCON, TDRC, TIT2, TPE1, TPOS, TRCK
+from mutagen.id3._frames import (
+    APIC,
+    COMM,
+    TALB,
+    TCON,
+    TDRC,
+    TIPL,
+    TIT2,
+    TPE1,
+    TPOS,
+    TRCK,
+    TXXX,
+)
 from mutagen.mp3 import MP3
 from mutagen.oggopus import OggOpus
+
+from musictk.retry import TRANSIENT_HTTP_RETRY
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -55,9 +71,70 @@ class MusicBrainzResult(TypedDict):
     track_total: str
     genre: str
     mbid: str
+    release_mbid: str
+    producers: list[str]
+    mixers: list[str]
+    engineers: list[str]
 
 
 SUPPORTED_EXTENSIONS: tuple[str, ...] = (".mp3", ".flac", ".opus")
+MUSICBRAINZ_REQUEST_INTERVAL_SECONDS = 1.0
+_last_musicbrainz_request = 0.0
+
+
+@dataclass(frozen=True)
+class EnrichmentSummary:
+    """Result of enriching a collection of audio files."""
+
+    total: int
+    tagged: int
+    covers_embedded: int
+
+
+def _musicbrainz_get(url: str, *, timeout: float = 10) -> requests.Response:
+    """Perform a rate-limited MusicBrainz request with transient retries."""
+    global _last_musicbrainz_request
+
+    headers = {"User-Agent": "musictk/0.1.0 (https://github.com/404Simon/musictk)"}
+    last_error: requests.RequestException | None = None
+
+    for attempt in range(1, TRANSIENT_HTTP_RETRY.max_attempts + 1):
+        elapsed = time.monotonic() - _last_musicbrainz_request
+        if elapsed < MUSICBRAINZ_REQUEST_INTERVAL_SECONDS:
+            time.sleep(MUSICBRAINZ_REQUEST_INTERVAL_SECONDS - elapsed)
+
+        _last_musicbrainz_request = time.monotonic()
+        try:
+            response = requests.get(url, headers=headers, timeout=timeout)
+            if response.status_code not in TRANSIENT_HTTP_RETRY.retryable_statuses:
+                return response
+
+            if attempt == TRANSIENT_HTTP_RETRY.max_attempts:
+                return response
+
+            retry_after = response.headers.get("Retry-After")
+            delay = TRANSIENT_HTTP_RETRY.delay(attempt, retry_after)
+            print(
+                f"  MusicBrainz returned {response.status_code}; "
+                f"retrying in {delay:.1f}s "
+                f"({attempt + 1}/{TRANSIENT_HTTP_RETRY.max_attempts})..."
+            )
+            time.sleep(delay)
+        except (requests.ConnectionError, requests.Timeout) as e:
+            last_error = e
+            if attempt == TRANSIENT_HTTP_RETRY.max_attempts:
+                raise
+
+            delay = TRANSIENT_HTTP_RETRY.delay(attempt)
+            print(
+                f"  Temporary MusicBrainz error; retrying in {delay:.1f}s "
+                f"({attempt + 1}/{TRANSIENT_HTTP_RETRY.max_attempts})..."
+            )
+            time.sleep(delay)
+
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("MusicBrainz request ended without a response")
 
 
 def get_audio_files(path: str | Path) -> list[str]:
@@ -339,47 +416,37 @@ def search_musicbrainz(
     artist: str, title: str, album: str = ""
 ) -> MusicBrainzResult | None:
     try:
-        query_parts: list[str] = []
-        if artist:
-            query_parts.append(f'artist:"{artist}"')
-        if title:
-            query_parts.append(f'recording:"{title}"')
-        if album:
-            query_parts.append(f'release:"{album}"')
-
-        if not query_parts:
+        if not artist and not title:
             return None
-
-        query = " AND ".join(query_parts)
-        url = f"https://musicbrainz.org/ws/2/recording/?query={quote(query)}&fmt=json&limit=5"
 
         print(f"  Searching: {artist} - {title}")
+        recordings: list[dict[str, Any]] = []
+        for index, (candidate_artist, candidate_album) in enumerate(
+            _musicbrainz_query_candidates(artist, album)
+        ):
+            if index > 0:
+                details = candidate_artist
+                if candidate_album:
+                    details += f" / {candidate_album}"
+                print(f"  Trying broader match: {details}")
 
-        headers = {"User-Agent": "musictk/0.1.0 (https://github.com/404Simon/musictk)"}
-        response = requests.get(url, headers=headers, timeout=10)
+            query_parts = [f'recording:"{title}"'] if title else []
+            if candidate_artist:
+                query_parts.append(f'artist:"{candidate_artist}"')
+            if candidate_album:
+                query_parts.append(f'release:"{candidate_album}"')
 
-        if response.status_code != 200:
-            print(f"  API error: {response.status_code}")
-            return None
-
-        data: dict[str, Any] = response.json()
-        recordings: list[dict[str, Any]] = data.get("recordings", [])
-
-        if not recordings and album:
-            print("  Retrying without album filter...")
-            query_parts_no_album: list[str] = []
-            if artist:
-                query_parts_no_album.append(f'artist:"{artist}"')
-            if title:
-                query_parts_no_album.append(f'recording:"{title}"')
-
-            query = " AND ".join(query_parts_no_album)
+            query = " AND ".join(query_parts)
             url = f"https://musicbrainz.org/ws/2/recording/?query={quote(query)}&fmt=json&limit=5"
+            response = _musicbrainz_get(url)
+            if response.status_code != 200:
+                print(f"  API error after retries: {response.status_code}")
+                return None
 
-            response = requests.get(url, headers=headers, timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                recordings = data.get("recordings", [])
+            data: dict[str, Any] = response.json()
+            recordings = data.get("recordings", [])
+            if recordings:
+                break
 
         if not recordings:
             return None
@@ -395,6 +462,10 @@ def search_musicbrainz(
             "track_total": "",
             "genre": "",
             "mbid": recording.get("id", ""),
+            "release_mbid": "",
+            "producers": [],
+            "mixers": [],
+            "engineers": [],
         }
 
         if "artist-credit" in recording:
@@ -407,15 +478,11 @@ def search_musicbrainz(
         if "releases" in recording:
             releases: list[dict[str, Any]] = recording["releases"]
             if releases:
-                preferred_release = releases[0]
-                for rel in releases:
-                    rel_group = rel.get("release-group", {})
-                    secondary_types = rel_group.get("secondary-types", [])
-                    if "Compilation" not in secondary_types:
-                        preferred_release = rel
-                        break
-
-                release = preferred_release
+                release = max(
+                    releases,
+                    key=lambda candidate: _release_match_score(candidate, album),
+                )
+                result["release_mbid"] = str(release.get("id", ""))
                 result["album"] = release.get("title", "")
 
                 if "date" in release:
@@ -437,6 +504,7 @@ def search_musicbrainz(
                                     )
                                     break
 
+        enrich_musicbrainz_details(result)
         return result
 
     except Exception as e:
@@ -444,38 +512,144 @@ def search_musicbrainz(
         return None
 
 
-def get_cover_art_url(mbid: str, album_name: str = "") -> str | None:
+def _musicbrainz_query_candidates(artist: str, album: str) -> list[tuple[str, str]]:
+    """Build strict-to-broad queries, including a featured-artist fallback."""
+    primary_artist = re.split(
+        r"\s*,\s*|\s+(?:feat\.?|ft\.?)\s+",
+        artist,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    candidates = [
+        (artist, album),
+        (artist, ""),
+        (primary_artist, album),
+        (primary_artist, ""),
+    ]
+    return list(dict.fromkeys(candidates))
+
+
+def _release_match_score(release: dict[str, Any], expected_album: str) -> int:
+    """Prefer an exact album release over compilations and unrelated editions."""
+    score = 0
+    if expected_album and _normalized_name(str(release.get("title", ""))) == (
+        _normalized_name(expected_album)
+    ):
+        score += 2
+
+    release_group = release.get("release-group", {})
+    secondary_types = (
+        release_group.get("secondary-types", [])
+        if isinstance(release_group, dict)
+        else []
+    )
+    if "Compilation" not in secondary_types:
+        score += 1
+    return score
+
+
+def enrich_musicbrainz_details(result: MusicBrainzResult) -> None:
+    """Add genres and production credits from recording relationships."""
+    mbid = result["mbid"]
+    if not mbid:
+        return
+
     try:
-        if mbid:
-            url = f"https://musicbrainz.org/ws/2/recording/{mbid}?inc=releases&fmt=json"
-            headers = {
-                "User-Agent": "musictk/0.1.0 (https://github.com/404Simon/musictk)"
-            }
-            response = requests.get(url, headers=headers, timeout=10)
+        url = (
+            f"https://musicbrainz.org/ws/2/recording/{mbid}"
+            "?inc=artist-rels+genres&fmt=json"
+        )
+        response = _musicbrainz_get(url)
+        if response.status_code != 200:
+            print(f"  Credits API error: {response.status_code}")
+            return
 
-            if response.status_code == 200:
-                data: dict[str, Any] = response.json()
-                releases: list[dict[str, Any]] = data.get("releases", [])
+        data: dict[str, Any] = response.json()
+        genres = data.get("genres", [])
+        if genres:
+            best_genre = max(genres, key=lambda genre: genre.get("count", 0))
+            result["genre"] = str(best_genre.get("name", ""))
 
-                for release in releases:
-                    release_id = release.get("id")
-                    if release_id:
-                        cover_url = (
-                            f"https://coverartarchive.org/release/{release_id}/front"
-                        )
-                        cover_response = requests.head(cover_url, timeout=5)
-                        if cover_response.status_code == 200:
-                            return str(cover_url)
+        add_credit_relations(result, data.get("relations", []))
 
-        if album_name:
-            itunes_url = f"https://itunes.apple.com/search?term={quote(album_name)}&media=music&entity=album&limit=1"
+        release_mbid = result["release_mbid"]
+        if release_mbid:
+            release_url = (
+                f"https://musicbrainz.org/ws/2/release/{release_mbid}"
+                "?inc=artist-rels&fmt=json"
+            )
+            release_response = _musicbrainz_get(release_url)
+            if release_response.status_code == 200:
+                release_data: dict[str, Any] = release_response.json()
+                add_credit_relations(result, release_data.get("relations", []))
+    except (requests.RequestException, ValueError) as e:
+        print(f"  Error getting credits: {e}")
+
+
+def add_credit_relations(
+    result: MusicBrainzResult, relations: list[dict[str, Any]]
+) -> None:
+    """Merge relevant MusicBrainz artist relationships into metadata."""
+    for relation in relations:
+        artist = relation.get("artist", {})
+        name = artist.get("name") if isinstance(artist, dict) else None
+        if not name:
+            continue
+
+        relation_type = relation.get("type")
+        if relation_type == "producer" and name not in result["producers"]:
+            result["producers"].append(str(name))
+        elif relation_type == "mix" and name not in result["mixers"]:
+            result["mixers"].append(str(name))
+        elif (
+            relation_type in {"recording", "mastering"}
+            and name not in result["engineers"]
+        ):
+            result["engineers"].append(str(name))
+
+
+def get_cover_art_url(
+    release_mbid: str,
+    artist_name: str = "",
+    album_name: str = "",
+) -> str | None:
+    """Find cover art for the exact matched release, with a strict fallback."""
+    try:
+        if release_mbid:
+            cover_url = f"https://coverartarchive.org/release/{release_mbid}/front"
+            cover_response = requests.head(
+                cover_url,
+                timeout=10,
+                allow_redirects=True,
+            )
+            if cover_response.status_code == 200:
+                return cover_url
+
+        if artist_name and album_name:
+            search_term = f"{artist_name} {album_name}"
+            itunes_url = (
+                "https://itunes.apple.com/search"
+                f"?term={quote(search_term)}&media=music&entity=album&limit=10"
+            )
             response = requests.get(itunes_url, timeout=10)
 
             if response.status_code == 200:
                 data = response.json()
                 results: list[dict[str, Any]] = data.get("results", [])
-                if results:
-                    artwork_url = results[0].get("artworkUrl100")
+                expected_album = _normalized_name(album_name)
+                expected_artist = _normalized_name(artist_name.split(",", 1)[0])
+                for result in results:
+                    result_album = _normalized_name(
+                        str(result.get("collectionName", ""))
+                    )
+                    result_artist = _normalized_name(str(result.get("artistName", "")))
+                    if (
+                        result_album != expected_album
+                        or result_artist != expected_artist
+                    ):
+                        continue
+
+                    artwork_url = result.get("artworkUrl100")
                     if artwork_url:
                         return str(artwork_url).replace("100x100bb", "500x500bb")
 
@@ -484,6 +658,11 @@ def get_cover_art_url(mbid: str, album_name: str = "") -> str | None:
     except Exception as e:
         print(f"  Error getting cover art: {e}")
         return None
+
+
+def _normalized_name(value: str) -> str:
+    """Normalize names for conservative external catalog matching."""
+    return "".join(character for character in value.casefold() if character.isalnum())
 
 
 def download_cover_art(url: str) -> bytes | None:
@@ -510,6 +689,7 @@ def embed_cover_art(file_path: str, cover_data: bytes) -> bool:
 
         if isinstance(audio_file, MP3):
             if audio_file.tags is not None:
+                audio_file.tags.delall("APIC")
                 audio_file.tags.add(
                     APIC(
                         encoding=3,
@@ -576,6 +756,25 @@ def apply_auto_tags(file_path: str, tag_data: MusicBrainzResult) -> bool:
             if track_str:
                 audio_file["TRCK"] = TRCK(encoding=3, text=[track_str])
 
+            people: list[list[str]] = []
+            people.extend(["producer", name] for name in tag_data["producers"])
+            people.extend(["mix", name] for name in tag_data["mixers"])
+            people.extend(["engineer", name] for name in tag_data["engineers"])
+            if people:
+                audio_file["TIPL"] = TIPL(encoding=3, people=people)
+            if tag_data["mbid"]:
+                audio_file["TXXX:MusicBrainz Track Id"] = TXXX(
+                    encoding=3,
+                    desc="MusicBrainz Track Id",
+                    text=[tag_data["mbid"]],
+                )
+            if tag_data["release_mbid"]:
+                audio_file["TXXX:MusicBrainz Album Id"] = TXXX(
+                    encoding=3,
+                    desc="MusicBrainz Album Id",
+                    text=[tag_data["release_mbid"]],
+                )
+
         elif isinstance(audio_file, (FLAC, OggOpus)):
             if tag_data.get("title"):
                 audio_file["TITLE"] = [tag_data["title"]]
@@ -591,6 +790,16 @@ def apply_auto_tags(file_path: str, tag_data: MusicBrainzResult) -> bool:
                 audio_file["TRACKNUMBER"] = [tag_data["track_num"]]
             if tag_data.get("track_total"):
                 audio_file["TRACKTOTAL"] = [tag_data["track_total"]]
+            if tag_data["producers"]:
+                audio_file["PRODUCER"] = tag_data["producers"]
+            if tag_data["mixers"]:
+                audio_file["MIXER"] = tag_data["mixers"]
+            if tag_data["engineers"]:
+                audio_file["ENGINEER"] = tag_data["engineers"]
+            if tag_data["mbid"]:
+                audio_file["MUSICBRAINZ_TRACKID"] = [tag_data["mbid"]]
+            if tag_data["release_mbid"]:
+                audio_file["MUSICBRAINZ_ALBUMID"] = [tag_data["release_mbid"]]
 
         audio_file.save()
         return True
@@ -661,23 +870,20 @@ def manual_edit_mode(path: str, json_path: str) -> None:
         print("\nNo changes detected in JSON file.")
 
 
-def auto_tag_mode(path: str, no_cover: bool, delay: float) -> None:
-    print("=== Auto Tag Mode ===")
-    print("Scanning for MP3/FLAC/OPUS files...")
-    audio_files = get_audio_files(path)
-
-    if not audio_files:
-        print("No MP3/FLAC/OPUS files found!")
-        raise click.Abort
-
-    print(f"Found {len(audio_files)} files")
-
+def enrich_audio_files(
+    audio_files: Sequence[str | Path],
+    *,
+    include_cover: bool = True,
+    delay: float = 1.0,
+) -> EnrichmentSummary:
+    """Enrich audio files with MusicBrainz metadata and production credits."""
+    paths = [str(Path(file_path)) for file_path in audio_files]
     success_count = 0
-    cover_downloads = 0
-    downloaded_albums: set[str] = set()
+    covers_embedded = 0
+    cover_cache: dict[str, bytes | None] = {}
 
-    for i, file_path in enumerate(audio_files):
-        print(f"\n[{i+1}/{len(audio_files)}] {os.path.basename(file_path)}")
+    for i, file_path in enumerate(paths):
+        print(f"\n[{i + 1}/{len(paths)}] {os.path.basename(file_path)}")
 
         basic_info = extract_basic_info(file_path)
         if not basic_info:
@@ -693,42 +899,66 @@ def auto_tag_mode(path: str, no_cover: bool, delay: float) -> None:
             title = tag_data["title"]
             album = tag_data["album"]
             print(f"  ✓ Found: {artist} - {title} ({album})")
+            credits = tag_data["producers"] + tag_data["mixers"]
+            if credits:
+                print(f"  ✓ Production credits: {', '.join(credits)}")
 
             if apply_auto_tags(file_path, tag_data):
                 success_count += 1
                 print("  ✓ Tags applied")
 
-                if not no_cover:
+                if include_cover:
                     album_key = f"{artist}|{album}".lower()
-
-                    if album_key in downloaded_albums:
-                        print("  - Cover art already downloaded for this album")
-                    else:
+                    if album_key not in cover_cache:
                         cover_url = get_cover_art_url(
-                            tag_data.get("mbid", ""), tag_data["album"]
+                            tag_data["release_mbid"],
+                            tag_data["artist"],
+                            tag_data["album"],
                         )
-                        if cover_url:
-                            cover_data = download_cover_art(cover_url)
-                            if cover_data:
-                                downloaded_albums.add(album_key)
-                                if embed_cover_art(file_path, cover_data):
-                                    cover_downloads += 1
-                                    print("  ✓ Cover art embedded")
-                                else:
-                                    print("  ! Failed to embed cover art")
-                            else:
-                                print("  ! Failed to download cover art")
-                        else:
-                            print("  - No cover art found")
+                        cover_cache[album_key] = (
+                            download_cover_art(cover_url) if cover_url else None
+                        )
+
+                    cover_data = cover_cache[album_key]
+                    if cover_data and embed_cover_art(file_path, cover_data):
+                        covers_embedded += 1
+                        print("  ✓ Cover art embedded")
+                    elif cover_data:
+                        print("  ! Failed to embed cover art")
+                    else:
+                        print("  - No cover art found")
             else:
                 print("  ! Failed to apply tags")
         else:
             print("  - No match found")
 
-        if i < len(audio_files) - 1:
+        if i < len(paths) - 1 and delay > 0:
             time.sleep(delay)
 
+    return EnrichmentSummary(
+        total=len(paths),
+        tagged=success_count,
+        covers_embedded=covers_embedded,
+    )
+
+
+def auto_tag_mode(path: str, no_cover: bool, delay: float) -> None:
+    print("=== Auto Tag Mode ===")
+    print("Scanning for MP3/FLAC/OPUS files...")
+    audio_files = get_audio_files(path)
+
+    if not audio_files:
+        print("No MP3/FLAC/OPUS files found!")
+        raise click.Abort
+
+    print(f"Found {len(audio_files)} files")
+    summary = enrich_audio_files(
+        audio_files,
+        include_cover=not no_cover,
+        delay=delay,
+    )
+
     print("\n=== Results ===")
-    print(f"Successfully tagged: {success_count}/{len(audio_files)} files")
+    print(f"Successfully tagged: {summary.tagged}/{summary.total} files")
     if not no_cover:
-        print(f"Cover art downloaded: {cover_downloads} files")
+        print(f"Cover art embedded: {summary.covers_embedded} files")

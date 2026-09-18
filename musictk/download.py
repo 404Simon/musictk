@@ -17,6 +17,7 @@ from mutagen.id3._util import error
 from mutagen.mp3 import MP3
 
 from musictk.mpd import update_mpd_database
+from musictk.tags import enrich_audio_files
 
 MAX_DURATION_SECONDS = 10 * 60
 YOUTUBE_PREFIXES = (
@@ -446,6 +447,33 @@ def tag_album_track_numbers(paths: list[Path]) -> None:
         audio.save()
 
 
+def tag_album_metadata(
+    paths: list[Path],
+    tracks: list[AlbumTrack],
+    album_title: str,
+    year: str | None = None,
+) -> None:
+    """Apply authoritative album context before online enrichment."""
+    total = len(paths)
+    for track_number, (path, track) in enumerate(
+        zip(paths, tracks, strict=False), start=1
+    ):
+        try:
+            audio = MP3(path, ID3=EasyID3)
+        except error:
+            audio = MP3(path)
+            audio.add_tags()
+            audio = MP3(path, ID3=EasyID3)
+
+        audio["title"] = track.title
+        audio["artist"] = track.artist
+        audio["album"] = album_title
+        audio["tracknumber"] = f"{track_number}/{total}"
+        if year:
+            audio["date"] = year
+        audio.save()
+
+
 def download_audio(url: str, output_dir: Path) -> Path:
     """Download audio file as MP3 and return downloaded path."""
     click.echo("Downloading audio...")
@@ -581,6 +609,20 @@ def add_album_art_to_tracks(paths: list[Path], thumbnail_url: str) -> None:
     click.echo(f"Album art embedded in {embedded}/{len(paths)} tracks")
 
 
+def enrich_downloaded_files(paths: list[Path]) -> None:
+    """Best-effort metadata enrichment shared by every download workflow."""
+    if not paths:
+        return
+
+    click.echo("Enriching metadata from MusicBrainz...")
+    try:
+        summary = enrich_audio_files(paths, include_cover=False, delay=1.0)
+        click.echo(f"Metadata enriched for {summary.tagged}/{summary.total} tracks")
+    except Exception as e:
+        # Online enrichment must never invalidate an otherwise valid download.
+        click.echo(f"Warning: Metadata enrichment failed: {e}")
+
+
 def download_and_tag(url: str, output_dir: Path) -> Path:
     """Download audio from URL and tag it with metadata."""
     metadata = extract_metadata(url)
@@ -595,14 +637,15 @@ def download_and_tag(url: str, output_dir: Path) -> Path:
 
     mp3_path = download_audio(url, output_dir)
     tag_mp3(mp3_path, metadata)
+    enrich_downloaded_files([mp3_path])
 
     return mp3_path
 
 
-def _show_playlist_tracks(url: str) -> tuple[str, str, list[dict[str, Any]]]:
+def _show_playlist_tracks(url: str) -> tuple[str, str, list[AlbumTrack]]:
     """Fetch and display playlist/album track listing.
 
-    Returns: (playlist_title, artist, list_of_track_dicts_from_ytdlp)
+    Returns: (playlist_title, artist, tracks)
     """
     try:
         result = subprocess.run(
@@ -615,7 +658,7 @@ def _show_playlist_tracks(url: str) -> tuple[str, str, list[dict[str, Any]]]:
     except subprocess.CalledProcessError as e:
         raise DownloadError(f"Failed to get playlist info: {e.stderr}") from e
 
-    tracks: list[dict[str, Any]] = []
+    entries: list[dict[str, Any]] = []
     playlist_title: str = "Unknown Album"
     artist: str = "Unknown Artist"
     for line in result.stdout.splitlines():
@@ -629,24 +672,35 @@ def _show_playlist_tracks(url: str) -> tuple[str, str, list[dict[str, Any]]]:
         if not isinstance(entry, dict):
             continue
         playlist_title = entry.get("playlist_title") or playlist_title
-        if not tracks:
+        if not entries:
             artist = (
                 entry.get("album_artist")
                 or entry.get("artist")
                 or entry.get("uploader")
                 or artist
             )
-        tracks.append(entry)
+        entries.append(entry)
+
+    tracks = [
+        AlbumTrack(
+            title=str(entry.get("title", "Unknown")),
+            artist=str(entry.get("artist") or entry.get("album_artist") or artist),
+            duration_seconds=int(entry.get("duration", 0) or 0),
+            track_number=index,
+            video_id=str(entry.get("id", "")),
+        )
+        for index, entry in enumerate(entries, start=1)
+    ]
 
     click.echo(f"Album: {playlist_title}")
     click.echo(f"Tracks: {len(tracks)}")
     click.echo()
 
-    for i, track in enumerate(tracks, start=1):
-        title = track.get("title", "Unknown")
-        raw_dur = track.get("duration")
-        dur = int(raw_dur) if isinstance(raw_dur, int | float) else None
-        click.echo(f"  {i:2d}. {title} [{format_duration(dur)}]")
+    for track in tracks:
+        click.echo(
+            f"  {track.track_number:2d}. {track.title} "
+            f"[{format_duration(track.duration_seconds)}]"
+        )
 
     return playlist_title, artist, tracks
 
@@ -669,18 +723,21 @@ def run_download(url: str, output_dir: Path | None = None, album: bool = False) 
         click.echo()
 
         try:
-            album_title, artist, _ = _show_playlist_tracks(url)
+            album_title, artist, tracks = _show_playlist_tracks(url)
             click.echo()
             click.confirm("Download this album?", default=True, abort=True)
             click.echo()
 
             paths = download_album(url, output_dir, artist, album_title)
             click.echo(f"Downloaded {len(paths)} tracks")
+            tag_album_metadata(paths, tracks, album_title)
 
             meta = extract_metadata(url)
             if meta.thumbnail:
                 click.echo("Embedding album art...")
                 add_album_art_to_tracks(paths, meta.thumbnail)
+
+            enrich_downloaded_files(paths)
 
             update_mpd_database()
         except DownloadError as e:
@@ -771,10 +828,18 @@ def run_search_download(
         try:
             paths = download_album(playlist_url, output_dir, artist, album_title)
             click.echo(f"Downloaded {len(paths)} tracks")
+            tag_album_metadata(
+                paths,
+                tracks,
+                album_title,
+                selected_album.year,
+            )
 
             if album_thumbnail:
                 click.echo("Embedding album art...")
                 add_album_art_to_tracks(paths, album_thumbnail)
+
+            enrich_downloaded_files(paths)
 
             update_mpd_database()
         except DownloadError as e:

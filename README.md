@@ -39,6 +39,7 @@ Built with Python 3.13, strict typing, and modern best practices.
 - **Search** for albums interactively on YouTube Music via `musictk search -a`
 - Uses ytmusicapi for structured album search (no API key required)
 - Automatically embeds album art into all tracks
+- Enriches every track with MusicBrainz metadata and available production credits
 - Tracks are organized into `<Artist> - <Album>/<NN> - <Title>.mp3`
 - Leverages yt-dlp for reliable audio extraction and metadata embedding
 
@@ -58,7 +59,7 @@ Built with Python 3.13, strict typing, and modern best practices.
 #### Auto Mode
 
 1. **Scan**: Finds all audio files and extracts basic metadata
-2. **Lookup**: Searches MusicBrainz database for accurate metadata
+2. **Lookup**: Searches MusicBrainz for metadata and production credits
 3. **Download**: Fetches high-quality cover art from Cover Art Archive or iTunes
 4. **Apply**: Updates audio files with correct tags and embedded artwork
 
@@ -66,6 +67,8 @@ Built with Python 3.13, strict typing, and modern best practices.
 
 - Basic: Artist, Album, Title, Year, Genre
 - Track info: Track number/total, Disc number/total
+- Credits: Producer, mixing and recording/mastering engineers (when available)
+- IDs: MusicBrainz recording and release IDs
 - Other: Comments, cover art (embedded + separate files)
 
 ## 🚀 Installation
@@ -156,7 +159,8 @@ musictk search "arcando california dreamin" --output-dir ~/Music/DNB
 ```
 
 `search` shows the top 5 YouTube results from `yt-dlp`, lets you pick one interactively,
-and then downloads + tags it just like `download`.
+and then downloads + tags it just like `download`. Both commands automatically enrich
+successful downloads with metadata and available production credits from MusicBrainz.
 
 For YouTube downloads, sponsor/ad segments (`music_offtopic`, `intro`, `outro`) are removed
 and long videos are filtered (`<= 10 minutes`).

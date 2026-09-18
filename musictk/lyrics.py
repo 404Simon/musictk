@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import random
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import aiohttp
 from mutagen._file import File
+
+from musictk.retry import TRANSIENT_HTTP_RETRY
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -19,8 +20,6 @@ if TYPE_CHECKING:
 class LyricsFetcher:
     API_BASE_URL: str = "https://lrclib.net"
     MAX_CONCURRENT_REQUESTS: int = 3
-    MAX_REQUEST_ATTEMPTS: int = 4
-    RETRYABLE_STATUSES: frozenset[int] = frozenset({429, 502, 503, 504})
     SUPPORTED_FORMATS: frozenset[str] = frozenset(
         {".mp3", ".flac", ".m4a", ".wav", ".ogg", ".opus"}
     )
@@ -144,7 +143,7 @@ class LyricsFetcher:
         self.logger.info(f"Searching lyrics with params: {params}")
         headers = {"User-Agent": "musictk (https://github.com/404Simon/musictk)"}
 
-        for attempt in range(1, self.MAX_REQUEST_ATTEMPTS + 1):
+        for attempt in range(1, TRANSIENT_HTTP_RETRY.max_attempts + 1):
             try:
                 async with (
                     self.request_semaphore,
@@ -155,10 +154,10 @@ class LyricsFetcher:
                         timeout=aiohttp.ClientTimeout(total=10),
                     ) as response,
                 ):
-                    if response.status in self.RETRYABLE_STATUSES:
+                    if response.status in TRANSIENT_HTTP_RETRY.retryable_statuses:
                         retry_after = response.headers.get("Retry-After")
                         await response.read()
-                        if attempt == self.MAX_REQUEST_ATTEMPTS:
+                        if attempt == TRANSIENT_HTTP_RETRY.max_attempts:
                             self.logger.error(
                                 "Lyrics service still unavailable after %d "
                                 "attempts (HTTP %d) for %s",
@@ -168,14 +167,14 @@ class LyricsFetcher:
                             )
                             return None
 
-                        delay = self._retry_delay(attempt, retry_after)
+                        delay = TRANSIENT_HTTP_RETRY.delay(attempt, retry_after)
                         self.logger.warning(
                             "Lyrics service returned HTTP %d; retrying in "
                             "%.1fs (attempt %d/%d)",
                             response.status,
                             delay,
                             attempt + 1,
-                            self.MAX_REQUEST_ATTEMPTS,
+                            TRANSIENT_HTTP_RETRY.max_attempts,
                         )
                     else:
                         response.raise_for_status()
@@ -188,20 +187,20 @@ class LyricsFetcher:
 
                 await asyncio.sleep(delay)
             except (aiohttp.ClientConnectionError, TimeoutError) as e:
-                if attempt == self.MAX_REQUEST_ATTEMPTS:
+                if attempt == TRANSIENT_HTTP_RETRY.max_attempts:
                     self.logger.error(
                         "Lyrics request failed after %d attempts: %s", attempt, e
                     )
                     return None
 
-                delay = self._retry_delay(attempt)
+                delay = TRANSIENT_HTTP_RETRY.delay(attempt)
                 self.logger.warning(
                     "Temporary lyrics request error: %s; retrying in %.1fs "
                     "(attempt %d/%d)",
                     e,
                     delay,
                     attempt + 1,
-                    self.MAX_REQUEST_ATTEMPTS,
+                    TRANSIENT_HTTP_RETRY.max_attempts,
                 )
                 await asyncio.sleep(delay)
             except aiohttp.ClientError as e:
@@ -212,17 +211,6 @@ class LyricsFetcher:
                 return None
 
         return None
-
-    @staticmethod
-    def _retry_delay(attempt: int, retry_after: str | None = None) -> float:
-        """Calculate a bounded exponential retry delay with jitter."""
-        if retry_after is not None:
-            try:
-                return min(max(float(retry_after), 0.0), 30.0)
-            except ValueError:
-                pass
-
-        return float(min(2 ** (attempt - 1) + random.uniform(0.0, 0.5), 30.0))
 
     def save_lrc_file(
         self, audio_file_path: Path, lyrics_data: dict[str, str | int]

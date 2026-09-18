@@ -79,7 +79,7 @@ def tags(
 
     Two modes available:
     - Manual: Extract tags to JSON, edit in nvim, apply changes
-    - Auto: Lookup metadata from MusicBrainz and download cover art
+    - Auto: Backfill metadata, production credits, and cover art via MusicBrainz
 
     Examples:
       musictk tags ~/Music --auto
@@ -153,7 +153,7 @@ def tags(
 def download(url: str, output_dir: Path | None, album: bool) -> None:
     """Download and tag music from YouTube or SoundCloud.
 
-    Downloads audio from URL using yt-dlp and automatically tags it with metadata.
+    Downloads audio via yt-dlp and enriches its tags through MusicBrainz.
     Requires yt-dlp to be installed (pip install yt-dlp).
 
     URL should be a valid YouTube or SoundCloud link.
