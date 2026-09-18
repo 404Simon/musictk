@@ -24,10 +24,12 @@ YOUTUBE_PREFIXES = (
     "https://www.youtube.com/",
     "https://youtube.com/",
     "https://youtu.be/",
+    "https://music.youtube.com/",
     "https://m.youtube.com/",
     "http://www.youtube.com/",
     "http://youtube.com/",
     "http://youtu.be/",
+    "http://music.youtube.com/",
 )
 
 
@@ -143,47 +145,42 @@ def _metadata_from_search_entry(entry: dict[str, Any]) -> SearchResult | None:
 
 
 def search_youtube(query: str, max_results: int = 5) -> list[SearchResult]:
-    """Search YouTube with yt-dlp and return top results."""
-    click.echo(f"Searching YouTube for: {query}")
+    """Search the YouTube Music song catalog and return top results."""
+    click.echo(f"Searching YouTube Music for: {query}")
 
     try:
-        result = subprocess.run(
-            [
-                "yt-dlp",
-                "--dump-json",
-                "--flat-playlist",
-                "--match-filter",
-                f"duration <= {MAX_DURATION_SECONDS}",
-                f"ytsearch{max_results}:{query}",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=20,
-            check=True,
-        )
-    except subprocess.CalledProcessError as e:
-        raise DownloadError(f"Search failed: {e.stderr.strip()}") from e
-    except subprocess.TimeoutExpired as e:
-        raise DownloadError("Search timed out") from e
+        from ytmusicapi import YTMusic
+
+        raw = YTMusic().search(query, filter="songs", limit=max_results)
+    except Exception as e:
+        raise DownloadError(f"Search failed: {e}") from e
 
     results: list[SearchResult] = []
-    for line in result.stdout.splitlines():
-        if not line.strip():
+    for entry in raw:
+        if not isinstance(entry, dict) or entry.get("resultType") != "song":
             continue
 
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
+        title = entry.get("title")
+        artist = _get_artist_name(entry)
+        video_id = entry.get("videoId")
+        if not title or not artist or not video_id:
             continue
 
-        if not isinstance(entry, dict):
+        duration_raw = entry.get("duration_seconds")
+        duration = (
+            int(duration_raw) if isinstance(duration_raw, int | float) else None
+        )
+        if duration is not None and duration > MAX_DURATION_SECONDS:
             continue
 
-        parsed = _metadata_from_search_entry(entry)
-        if parsed is None:
-            continue
-
-        results.append(parsed)
+        results.append(
+            SearchResult(
+                title=str(title),
+                artist=artist,
+                duration=duration,
+                url=f"https://music.youtube.com/watch?v={video_id}",
+            )
+        )
 
     return results
 

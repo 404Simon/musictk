@@ -158,7 +158,7 @@ musictk search griechischer wein
 musictk search "arcando california dreamin" --output-dir ~/Music/DNB
 ```
 
-`search` shows the top 5 YouTube results from `yt-dlp`, lets you pick one interactively,
+`search` shows the top 5 songs from YouTube Music, lets you pick one interactively,
 and then downloads + tags it just like `download`. Both commands automatically enrich
 successful downloads with metadata and available production credits from MusicBrainz.
 
