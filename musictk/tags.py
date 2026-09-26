@@ -665,6 +665,18 @@ def _normalized_name(value: str) -> str:
     return "".join(character for character in value.casefold() if character.isalnum())
 
 
+def _album_mismatch(expected_album: str, matched_album: str) -> bool:
+    """Check whether a MusicBrainz match left the file's album.
+
+    Guards album workflows (and `tags --auto` on album folders) against
+    per-track lookups that hit different releases such as demos, deluxe
+    editions, or compilations.
+    """
+    if not expected_album or not matched_album:
+        return False
+    return _normalized_name(expected_album) != _normalized_name(matched_album)
+
+
 def download_cover_art(url: str) -> bytes | None:
     try:
         print("  Downloading cover art...")
@@ -731,7 +743,18 @@ def embed_cover_art(file_path: str, cover_data: bytes) -> bool:
         return False
 
 
-def apply_auto_tags(file_path: str, tag_data: MusicBrainzResult) -> bool:
+def apply_auto_tags(
+    file_path: str,
+    tag_data: MusicBrainzResult,
+    preserve: Sequence[str] | None = None,
+) -> bool:
+    """Apply MusicBrainz metadata, optionally preserving locked fields.
+
+    `preserve` may contain any of: title, artist, album, year, track.
+    Used by album workflows where the YouTube Music tracklist is
+    authoritative and per-track lookups must not split the album.
+    """
+    preserved = set(preserve or [])
     try:
         audio_file = MutagenFile(file_path)
 
@@ -739,22 +762,23 @@ def apply_auto_tags(file_path: str, tag_data: MusicBrainzResult) -> bool:
             return False
 
         if isinstance(audio_file, MP3):
-            if tag_data.get("title"):
+            if tag_data.get("title") and "title" not in preserved:
                 audio_file["TIT2"] = TIT2(encoding=3, text=[tag_data["title"]])
-            if tag_data.get("artist"):
+            if tag_data.get("artist") and "artist" not in preserved:
                 audio_file["TPE1"] = TPE1(encoding=3, text=[tag_data["artist"]])
-            if tag_data.get("album"):
+            if tag_data.get("album") and "album" not in preserved:
                 audio_file["TALB"] = TALB(encoding=3, text=[tag_data["album"]])
-            if tag_data.get("year"):
+            if tag_data.get("year") and "year" not in preserved:
                 audio_file["TDRC"] = TDRC(encoding=3, text=[tag_data["year"]])
             if tag_data.get("genre"):
                 audio_file["TCON"] = TCON(encoding=3, text=[tag_data["genre"]])
 
-            track_str = tag_data.get("track_num", "")
-            if tag_data.get("track_total"):
-                track_str += f"/{tag_data['track_total']}"
-            if track_str:
-                audio_file["TRCK"] = TRCK(encoding=3, text=[track_str])
+            if "track" not in preserved:
+                track_str = tag_data.get("track_num", "")
+                if tag_data.get("track_total"):
+                    track_str += f"/{tag_data['track_total']}"
+                if track_str:
+                    audio_file["TRCK"] = TRCK(encoding=3, text=[track_str])
 
             people: list[list[str]] = []
             people.extend(["producer", name] for name in tag_data["producers"])
@@ -762,13 +786,13 @@ def apply_auto_tags(file_path: str, tag_data: MusicBrainzResult) -> bool:
             people.extend(["engineer", name] for name in tag_data["engineers"])
             if people:
                 audio_file["TIPL"] = TIPL(encoding=3, people=people)
-            if tag_data["mbid"]:
+            if tag_data["mbid"] and "mbid" not in preserved:
                 audio_file["TXXX:MusicBrainz Track Id"] = TXXX(
                     encoding=3,
                     desc="MusicBrainz Track Id",
                     text=[tag_data["mbid"]],
                 )
-            if tag_data["release_mbid"]:
+            if tag_data["release_mbid"] and "mbid" not in preserved:
                 audio_file["TXXX:MusicBrainz Album Id"] = TXXX(
                     encoding=3,
                     desc="MusicBrainz Album Id",
@@ -776,29 +800,30 @@ def apply_auto_tags(file_path: str, tag_data: MusicBrainzResult) -> bool:
                 )
 
         elif isinstance(audio_file, (FLAC, OggOpus)):
-            if tag_data.get("title"):
+            if tag_data.get("title") and "title" not in preserved:
                 audio_file["TITLE"] = [tag_data["title"]]
-            if tag_data.get("artist"):
+            if tag_data.get("artist") and "artist" not in preserved:
                 audio_file["ARTIST"] = [tag_data["artist"]]
-            if tag_data.get("album"):
+            if tag_data.get("album") and "album" not in preserved:
                 audio_file["ALBUM"] = [tag_data["album"]]
-            if tag_data.get("year"):
+            if tag_data.get("year") and "year" not in preserved:
                 audio_file["DATE"] = [tag_data["year"]]
             if tag_data.get("genre"):
                 audio_file["GENRE"] = [tag_data["genre"]]
-            if tag_data.get("track_num"):
-                audio_file["TRACKNUMBER"] = [tag_data["track_num"]]
-            if tag_data.get("track_total"):
-                audio_file["TRACKTOTAL"] = [tag_data["track_total"]]
+            if "track" not in preserved:
+                if tag_data.get("track_num"):
+                    audio_file["TRACKNUMBER"] = [tag_data["track_num"]]
+                if tag_data.get("track_total"):
+                    audio_file["TRACKTOTAL"] = [tag_data["track_total"]]
             if tag_data["producers"]:
                 audio_file["PRODUCER"] = tag_data["producers"]
             if tag_data["mixers"]:
                 audio_file["MIXER"] = tag_data["mixers"]
             if tag_data["engineers"]:
                 audio_file["ENGINEER"] = tag_data["engineers"]
-            if tag_data["mbid"]:
+            if tag_data["mbid"] and "mbid" not in preserved:
                 audio_file["MUSICBRAINZ_TRACKID"] = [tag_data["mbid"]]
-            if tag_data["release_mbid"]:
+            if tag_data["release_mbid"] and "mbid" not in preserved:
                 audio_file["MUSICBRAINZ_ALBUMID"] = [tag_data["release_mbid"]]
 
         audio_file.save()
@@ -875,12 +900,26 @@ def enrich_audio_files(
     *,
     include_cover: bool = True,
     delay: float = 1.0,
+    preserve_album: bool = False,
 ) -> EnrichmentSummary:
-    """Enrich audio files with MusicBrainz metadata and production credits."""
+    """Enrich audio files with MusicBrainz metadata and production credits.
+
+    When `preserve_album` is True (album downloads), the authoritative
+    YouTube Music tracklist (title/artist/album/year/track numbers) is kept
+    and only genre, production credits, and cover art are added. This keeps
+    every track on the same album so players like rmpc/MPD don't split it
+    into several albums when per-track lookups hit different releases
+    (e.g. standard edition vs demos).
+    """
     paths = [str(Path(file_path)) for file_path in audio_files]
     success_count = 0
     covers_embedded = 0
     cover_cache: dict[str, bytes | None] = {}
+    locked_fields: Sequence[str] | None = (
+        ("title", "artist", "album", "year", "track", "mbid")
+        if preserve_album
+        else None
+    )
 
     for i, file_path in enumerate(paths):
         print(f"\n[{i + 1}/{len(paths)}] {os.path.basename(file_path)}")
@@ -895,25 +934,63 @@ def enrich_audio_files(
         )
 
         if tag_data:
-            artist = tag_data["artist"]
+            if not preserve_album and _album_mismatch(
+                basic_info["album"], tag_data["album"]
+            ):
+                # Per-track lookup hit a different release (demo, deluxe,
+                # compilation...). Keep the file's album identity so a
+                # folder of tracks never splits into multiple albums.
+                print(
+                    f"  ! Match is on '{tag_data['album']}'; "
+                    f"keeping album '{basic_info['album']}'"
+                )
+                locked_fields_for_file: Sequence[str] | None = (
+                    "title",
+                    "artist",
+                    "album",
+                    "year",
+                    "track",
+                    "mbid",
+                )
+                artist = basic_info["artist"] or tag_data["artist"]
+                album = basic_info["album"]
+            else:
+                locked_fields_for_file = locked_fields
+                artist = (
+                    basic_info["artist"]
+                    if preserve_album and basic_info["artist"]
+                    else tag_data["artist"]
+                )
+                album = (
+                    basic_info["album"]
+                    if preserve_album and basic_info["album"]
+                    else tag_data["album"]
+                )
             title = tag_data["title"]
-            album = tag_data["album"]
             print(f"  ✓ Found: {artist} - {title} ({album})")
             credits = tag_data["producers"] + tag_data["mixers"]
             if credits:
                 print(f"  ✓ Production credits: {', '.join(credits)}")
 
-            if apply_auto_tags(file_path, tag_data):
+            if apply_auto_tags(
+                file_path, tag_data, preserve=locked_fields_for_file
+            ):
                 success_count += 1
                 print("  ✓ Tags applied")
 
                 if include_cover:
                     album_key = f"{artist}|{album}".lower()
                     if album_key not in cover_cache:
+                        # Only trust the MB release ID when it actually
+                        # matches the file's album; otherwise a demo/deluxe
+                        # cover would leak onto the standard edition.
+                        release_mbid = tag_data["release_mbid"]
+                        if _album_mismatch(basic_info["album"], tag_data["album"]):
+                            release_mbid = ""
                         cover_url = get_cover_art_url(
-                            tag_data["release_mbid"],
-                            tag_data["artist"],
-                            tag_data["album"],
+                            release_mbid,
+                            artist,
+                            album,
                         )
                         cover_cache[album_key] = (
                             download_cover_art(cover_url) if cover_url else None

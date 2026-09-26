@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 from musictk.retry import RetryPolicy
 from musictk.tags import (
     MusicBrainzResult,
+    _album_mismatch,
     _musicbrainz_query_candidates,
     add_credit_relations,
     enrich_audio_files,
@@ -105,6 +106,90 @@ class EnrichmentTests(unittest.TestCase):
         self.assertEqual(summary.covers_embedded, 2)
         download_cover.assert_called_once_with("https://cover")
         self.assertEqual(embed_cover.call_count, 2)
+
+    @patch("musictk.tags.embed_cover_art", return_value=True)
+    @patch("musictk.tags.download_cover_art", return_value=b"cover")
+    @patch("musictk.tags.get_cover_art_url", return_value="https://cover")
+    @patch("musictk.tags.apply_auto_tags", return_value=True)
+    @patch("musictk.tags.search_musicbrainz")
+    @patch("musictk.tags.extract_basic_info")
+    def test_preserve_album_locks_track_identity(
+        self,
+        extract_info: Mock,
+        search: Mock,
+        apply: Mock,
+        _cover_url: Mock,
+        _download_cover: Mock,
+        _embed_cover: Mock,
+    ) -> None:
+        extract_info.return_value = {
+            "file_path": "track.mp3",
+            "artist": "Lana Del Rey",
+            "title": "Blue Jeans",
+            "album": "Born to Die",
+            "filename": "track",
+        }
+        search.return_value = musicbrainz_result()
+
+        enrich_audio_files(
+            [Path("03.mp3")],
+            include_cover=False,
+            delay=0,
+            preserve_album=True,
+        )
+
+        apply.assert_called_once()
+        _, kwargs = apply.call_args
+        self.assertEqual(
+            set(kwargs["preserve"]),
+            {"title", "artist", "album", "year", "track", "mbid"},
+        )
+
+    @patch("musictk.tags.embed_cover_art", return_value=True)
+    @patch("musictk.tags.download_cover_art", return_value=b"cover")
+    @patch("musictk.tags.get_cover_art_url", return_value="https://cover")
+    @patch("musictk.tags.apply_auto_tags", return_value=True)
+    @patch("musictk.tags.search_musicbrainz")
+    @patch("musictk.tags.extract_basic_info")
+    def test_album_mismatch_keeps_file_album(
+        self,
+        extract_info: Mock,
+        search: Mock,
+        apply: Mock,
+        _cover_url: Mock,
+        _download_cover: Mock,
+        _embed_cover: Mock,
+    ) -> None:
+        extract_info.return_value = {
+            "file_path": "track.mp3",
+            "artist": "Lana Del Rey",
+            "title": "Blue Jeans",
+            "album": "Born to Die",
+            "filename": "track",
+        }
+        demo = musicbrainz_result()
+        demo["album"] = "Born to Die Demos"
+        demo["title"] = "Blue Jeans (demo)"
+        search.return_value = demo
+
+        enrich_audio_files([Path("03.mp3")], include_cover=False, delay=0)
+
+        apply.assert_called_once()
+        _, kwargs = apply.call_args
+        self.assertIn("album", kwargs["preserve"])
+        self.assertIn("title", kwargs["preserve"])
+
+
+class AlbumMismatchTests(unittest.TestCase):
+    def test_same_album_normalized_is_not_mismatch(self) -> None:
+        self.assertFalse(_album_mismatch("Born to Die", "born to die"))
+
+    def test_demo_release_is_mismatch(self) -> None:
+        self.assertTrue(_album_mismatch("Born to Die", "Born to Die Demos"))
+
+    def test_missing_album_is_not_mismatch(self) -> None:
+        self.assertFalse(_album_mismatch("", "Born to Die"))
+        self.assertFalse(_album_mismatch("Born to Die", ""))
 
 
 if __name__ == "__main__":

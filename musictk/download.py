@@ -449,9 +449,16 @@ def tag_album_metadata(
     tracks: list[AlbumTrack],
     album_title: str,
     year: str | None = None,
+    album_artist: str | None = None,
 ) -> None:
-    """Apply authoritative album context before online enrichment."""
+    """Apply authoritative album context before online enrichment.
+
+    Sets a uniform album title/year plus the albumartist so players group
+    all tracks as one album, while keeping per-track title/artist/number
+    from the YouTube Music tracklist.
+    """
     total = len(paths)
+    fallback_artist = album_artist or (tracks[0].artist if tracks else "")
     for track_number, (path, track) in enumerate(
         zip(paths, tracks, strict=False), start=1
     ):
@@ -464,6 +471,8 @@ def tag_album_metadata(
 
         audio["title"] = track.title
         audio["artist"] = track.artist
+        if fallback_artist:
+            audio["albumartist"] = fallback_artist
         audio["album"] = album_title
         audio["tracknumber"] = f"{track_number}/{total}"
         if year:
@@ -606,14 +615,24 @@ def add_album_art_to_tracks(paths: list[Path], thumbnail_url: str) -> None:
     click.echo(f"Album art embedded in {embedded}/{len(paths)} tracks")
 
 
-def enrich_downloaded_files(paths: list[Path]) -> None:
-    """Best-effort metadata enrichment shared by every download workflow."""
+def enrich_downloaded_files(
+    paths: list[Path], *, preserve_album: bool = False
+) -> None:
+    """Best-effort metadata enrichment shared by every download workflow.
+
+    Album downloads pass `preserve_album=True` so per-track MusicBrainz
+    lookups only add genre/credits and never rewrite the authoritative
+    title/artist/album/year/track numbers (which would split the album in
+    MPD/rmpc when tracks hit different releases).
+    """
     if not paths:
         return
 
     click.echo("Enriching metadata from MusicBrainz...")
     try:
-        summary = enrich_audio_files(paths, include_cover=False, delay=1.0)
+        summary = enrich_audio_files(
+            paths, include_cover=False, delay=1.0, preserve_album=preserve_album
+        )
         click.echo(f"Metadata enriched for {summary.tagged}/{summary.total} tracks")
     except Exception as e:
         # Online enrichment must never invalidate an otherwise valid download.
@@ -727,14 +746,14 @@ def run_download(url: str, output_dir: Path | None = None, album: bool = False) 
 
             paths = download_album(url, output_dir, artist, album_title)
             click.echo(f"Downloaded {len(paths)} tracks")
-            tag_album_metadata(paths, tracks, album_title)
+            tag_album_metadata(paths, tracks, album_title, album_artist=artist)
 
             meta = extract_metadata(url)
             if meta.thumbnail:
                 click.echo("Embedding album art...")
                 add_album_art_to_tracks(paths, meta.thumbnail)
 
-            enrich_downloaded_files(paths)
+            enrich_downloaded_files(paths, preserve_album=True)
 
             update_mpd_database()
         except DownloadError as e:
@@ -830,13 +849,14 @@ def run_search_download(
                 tracks,
                 album_title,
                 selected_album.year,
+                album_artist=artist,
             )
 
             if album_thumbnail:
                 click.echo("Embedding album art...")
                 add_album_art_to_tracks(paths, album_thumbnail)
 
-            enrich_downloaded_files(paths)
+            enrich_downloaded_files(paths, preserve_album=True)
 
             update_mpd_database()
         except DownloadError as e:
