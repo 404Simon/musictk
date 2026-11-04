@@ -100,7 +100,7 @@ musictk lyrics ~/Music
 musictk lyrics /path/to/album --lyrics-dir /custom/lyrics/path
 ```
 
-Lyrics are saved to `~/Music/mpd/lyrics/` by default (configurable with `--lyrics-dir`).
+Lyrics are saved next to each audio file and to `~/Music/mpd/lyrics/` by default (configurable with `--lyrics-dir`). A track is skipped if lyrics already exist in either location. Requests are sent sequentially and spaced out (default 1s, configurable with `--delay`) to respect lrclib.net's rate limits, and `Retry-After` responses are honored.
 
 ### Playlist Sync
 

@@ -32,19 +32,32 @@ def main() -> None:
     type=click.Path(path_type=Path),
     help="Custom directory for lyrics files (default: ~/Music/mpd/lyrics)",
 )
-def lyrics(path: Path, lyrics_dir: Path | None) -> None:
+@click.option(
+    "--delay",
+    type=click.FloatRange(min=0.0),
+    default=LyricsFetcher.DEFAULT_REQUEST_INTERVAL,
+    show_default=True,
+    help="Minimum delay between requests in seconds",
+)
+def lyrics(path: Path, lyrics_dir: Path | None, delay: float) -> None:
     """Fetch synced lyrics for your music library.
 
     Scans PATH for audio files and downloads synced lyrics from lrclib.net.
     PATH can be either a directory or a single audio file.
+    Each .lrc file is saved next to its audio file and to the lyrics
+    directory, so players that read either location find it.
     Supports MP3, FLAC, M4A, WAV, OGG, and OPUS files.
+
+    Requests are sent sequentially and spaced out (default 1s) to respect
+    lrclib.net's rate limits. Use --delay to adjust the interval.
 
     Examples:
       musictk lyrics ~/Music
       musictk lyrics ~/Music/song.mp3
       musictk lyrics /path/to/album --lyrics-dir /custom/lyrics/path
+      musictk lyrics ~/Music --delay 2
     """
-    fetcher = LyricsFetcher(path, lyrics_dir)
+    fetcher = LyricsFetcher(path, lyrics_dir, request_interval=delay)
     asyncio.run(fetcher.run())
 
 
